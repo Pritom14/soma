@@ -1,0 +1,50 @@
+[
+  {
+    "context": "read a GitHub issue before fixing",
+    "action": "Read issue title and body fully, identify exact symptom vs root cause, find mentioned file paths or function names",
+    "outcome": "Clear understanding of what to change and where",
+    "success": true,
+    "confidence": 0.80,
+    "belief": "Issue title is often vague - the body contains the real signal"
+  },
+  {
+    "context": "find relevant files for a bug fix",
+    "action": "Grep for identifiers from the issue, narrow to 3-5 files, read them before writing any code",
+    "outcome": "Correct files identified without guessing",
+    "success": true,
+    "confidence": 0.80,
+    "belief": "Read before write - grep the issue keywords to find the right files"
+  },
+  {
+    "context": "write a TypeScript fix or feature",
+    "action": "Match existing code style exactly, preserve type signatures, add types for new code, no any",
+    "outcome": "Code that passes pnpm typecheck without new errors",
+    "success": true,
+    "confidence": 0.75,
+    "belief": "TypeScript fixes must preserve or improve type safety - never use any"
+  },
+  {
+    "context": "submit a pull request for open source",
+    "action": "Reference the issue number, explain what changed and why, keep diff minimal and focused",
+    "outcome": "PR that gets reviewed positively",
+    "success": true,
+    "confidence": 0.75,
+    "belief": "Minimal focused diffs get merged - big PRs get abandoned in review"
+  },
+  {
+    "context": "pnpm build or typecheck fails after edit",
+    "action": "Read the exact TypeScript error, trace the type mismatch, fix the type not the check",
+    "outcome": "Build passes with correct types",
+    "success": true,
+    "confidence": 0.80,
+    "belief": "TypeScript errors are precise - read them exactly, dont suppress with casts"
+  },
+  {
+    "context": "tests fail after a code change",
+    "action": "Run failing tests individually, read the assertion that failed, fix the code not the test",
+    "outcome": "Tests pass with correct behavior",
+    "success": true,
+    "confidence": 0.85,
+    "belief": "Fix the code to match the test - never change tests to match broken code"
+  }
+]

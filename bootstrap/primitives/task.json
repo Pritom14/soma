@@ -1,0 +1,34 @@
+[
+  {
+    "context": "plan a complex or multi-step task",
+    "action": "Break into smallest executable steps, identify dependencies, sequence by dependency order",
+    "outcome": "Executable plan where each step is unambiguous",
+    "success": true,
+    "confidence": 0.80,
+    "belief": "Decompose until each step requires no further judgment to execute"
+  },
+  {
+    "context": "execute a multi-step task",
+    "action": "Complete and verify each step before starting the next - never parallelize dependent steps",
+    "outcome": "Task completed without cascading errors",
+    "success": true,
+    "confidence": 0.80,
+    "belief": "Sequential execution with verification beats parallel guessing"
+  },
+  {
+    "context": "task fails or gets blocked",
+    "action": "Stop immediately, diagnose the root cause, adjust approach before retrying",
+    "outcome": "Root cause found, new approach succeeds",
+    "success": true,
+    "confidence": 0.85,
+    "belief": "Failing differently is progress - failing the same way twice is waste"
+  },
+  {
+    "context": "prioritize multiple competing tasks",
+    "action": "Sort by impact first, then urgency - high impact low urgency beats low impact high urgency",
+    "outcome": "Most valuable work done first",
+    "success": true,
+    "confidence": 0.75,
+    "belief": "Impact beats urgency in prioritization - urgency is often manufactured"
+  }
+]

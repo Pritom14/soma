@@ -1,0 +1,46 @@
+{
+  "pr_streak": {
+    "id": "pr_streak",
+    "description": "Contribute at least 1 PR per week",
+    "target_value": 1.0,
+    "current_value": 4.0,
+    "unit": "prs_per_week",
+    "met_count": 1,
+    "missed_count": 0,
+    "last_checked": "2026-04-11T08:49:47.709247",
+    "is_active": true
+  },
+  "belief_confidence": {
+    "id": "belief_confidence",
+    "description": "Keep average oss_contribution belief confidence above 68%",
+    "target_value": 0.68,
+    "current_value": 0.45,
+    "unit": "confidence",
+    "met_count": 0,
+    "missed_count": 0,
+    "last_checked": "2026-04-11T08:49:47.709024",
+    "is_active": true
+  },
+  "pr_response_time": {
+    "id": "pr_response_time",
+    "description": "Respond to PR comments within 24 hours",
+    "target_value": 24.0,
+    "current_value": 25.9,
+    "unit": "hours",
+    "met_count": 0,
+    "missed_count": 1,
+    "last_checked": "2026-04-11T08:49:47.709401",
+    "is_active": true
+  },
+  "open_pr_count": {
+    "id": "open_pr_count",
+    "description": "Keep at least 2 open PRs at any time",
+    "target_value": 2.0,
+    "current_value": 4.0,
+    "unit": "count",
+    "met_count": 1,
+    "missed_count": 0,
+    "last_checked": "2026-04-11T08:49:47.707577",
+    "is_active": true
+  }
+}

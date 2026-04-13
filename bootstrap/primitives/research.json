@@ -1,0 +1,34 @@
+[
+  {
+    "context": "research a new topic or domain",
+    "action": "Start broad to map the space, identify key concepts and unknowns, then go deep on gaps",
+    "outcome": "Structured understanding with explicit known unknowns",
+    "success": true,
+    "confidence": 0.75,
+    "belief": "Research: breadth first to map the space, then depth on critical unknowns"
+  },
+  {
+    "context": "evaluate the reliability of a source",
+    "action": "Check recency, author expertise, primary vs secondary, cross-reference with independent sources",
+    "outcome": "Calibrated confidence in the information",
+    "success": true,
+    "confidence": 0.80,
+    "belief": "Primary sources and independent cross-references determine true reliability"
+  },
+  {
+    "context": "synthesize information from multiple sources",
+    "action": "Find the common signal, explicitly note disagreements, extract the strongest supported claim",
+    "outcome": "Coherent synthesized view with noted uncertainties",
+    "success": true,
+    "confidence": 0.75,
+    "belief": "Synthesis means extracting signal - not summarizing everything equally"
+  },
+  {
+    "context": "form a hypothesis or theory",
+    "action": "State it falsifiably, identify what evidence would prove it wrong, then test",
+    "outcome": "Testable hypothesis with clear falsification criteria",
+    "success": true,
+    "confidence": 0.75,
+    "belief": "A hypothesis that cannot be falsified is not useful - state what would disprove it"
+  }
+]

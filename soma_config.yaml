@@ -1,0 +1,30 @@
+# SOMA Configuration
+
+channels:
+  file:
+    enabled: true
+  slack:
+    enabled: false
+    webhook_url: ""
+    bot_token: ""
+    channel: "#soma"
+  telegram:
+    enabled: false
+    bot_token: ""
+    chat_id: ""
+
+# Confidence gate thresholds
+gate:
+  act: 0.68       # >= this: act autonomously
+  gather: 0.45    # >= this: act with caution
+  # below gather: surface to human via decision_request
+
+# Work loop schedule (informational — set up cron externally)
+# Example cron: */30 * * * * cd ~/Desktop/soma && python3 main.py --run-loop >> comms/outbox/cron.log 2>&1
+loop:
+  interval_minutes: 30
+
+# Claude break-glass (only used when local models fail or explicitly requested)
+claude:
+  enabled: true
+  only_when_explicitly_requested: false  # set true to require --use-claude flag

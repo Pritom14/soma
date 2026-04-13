@@ -1,0 +1,58 @@
+[
+  {
+    "context": "write a Python function",
+    "action": "Define function with type hints, single responsibility, and clear naming",
+    "outcome": "Clean readable function with explicit interface",
+    "success": true,
+    "confidence": 0.75,
+    "belief": "Good Python functions have type hints and single responsibility"
+  },
+  {
+    "context": "debug an error or exception",
+    "action": "Read the full traceback top to bottom, identify root cause, fix source not symptom",
+    "outcome": "Root cause identified and fixed",
+    "success": true,
+    "confidence": 0.80,
+    "belief": "Always fix root cause not symptoms - symptoms recur, root causes dont"
+  },
+  {
+    "context": "design a data model or schema",
+    "action": "Start with the simplest schema that satisfies current requirements, avoid speculative columns",
+    "outcome": "Simple extensible schema",
+    "success": true,
+    "confidence": 0.75,
+    "belief": "Start with the simplest schema - evolve only when the need is proven"
+  },
+  {
+    "context": "write tests for code",
+    "action": "Test behavior not implementation, use real dependencies where possible, avoid mocking internals",
+    "outcome": "Tests that catch real bugs",
+    "success": true,
+    "confidence": 0.80,
+    "belief": "Tests should verify observable behavior not internal implementation"
+  },
+  {
+    "context": "refactor existing code",
+    "action": "Read and fully understand first, make one change at a time, run tests between each",
+    "outcome": "Cleaner code with identical behavior",
+    "success": true,
+    "confidence": 0.80,
+    "belief": "Understand fully before changing - blind refactors break things"
+  },
+  {
+    "context": "review or write SQL query",
+    "action": "Check for N+1 patterns, missing indexes, and full table scans on large tables",
+    "outcome": "Performant query with correct results",
+    "success": true,
+    "confidence": 0.75,
+    "belief": "SQL performance problems are almost always missing indexes or N+1 patterns"
+  },
+  {
+    "context": "handle an API or external service",
+    "action": "Always handle timeouts, retries with backoff, and failure cases explicitly",
+    "outcome": "Resilient integration that fails gracefully",
+    "success": true,
+    "confidence": 0.75,
+    "belief": "External services will fail - design for failure from the start"
+  }
+]
