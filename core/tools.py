@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 core/tools.py - SOMA's hands.
 File I/O and subprocess execution with safety guardrails.
@@ -35,8 +36,9 @@ class RunResult:
         return "\n".join(lines[-n:])
 
 
-def run(cmd: list[str] | str, cwd: str | Path = None,
-        timeout: int = 60, env: dict = None) -> RunResult:
+def run(
+    cmd: list[str] | str, cwd: str | Path = None, timeout: int = 60, env: dict = None
+) -> RunResult:
     """Run a shell command safely with timeout."""
     try:
         result = subprocess.run(
@@ -60,6 +62,7 @@ def run(cmd: list[str] | str, cwd: str | Path = None,
 def run_python(script: str, cwd: str | Path = None, timeout: int = 30) -> RunResult:
     """Execute a Python script string in a subprocess."""
     import tempfile
+
     with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
         f.write(script)
         tmp = f.name
@@ -104,11 +107,15 @@ def patch_file(path: str | Path, old: str, new: str) -> bool:
     return True
 
 
-def grep(pattern: str, directory: str | Path, extensions: list[str] = None,
-         max_results: int = 30) -> list[dict]:
+def grep(
+    pattern: str,
+    directory: str | Path,
+    extensions: list[str] = None,
+    max_results: int = 30,
+) -> list[dict]:
     """Grep for a pattern across a directory. Returns list of {file, line, text}."""
     ext_args = []
-    for ext in (extensions or []):
+    for ext in extensions or []:
         ext_args += ["--include", f"*{ext}"]
 
     cmd = ["grep", "-rn", "--max-count=3", pattern, str(directory)] + ext_args
@@ -120,16 +127,22 @@ def grep(pattern: str, directory: str | Path, extensions: list[str] = None,
     for line in result.stdout.splitlines()[:max_results]:
         parts = line.split(":", 2)
         if len(parts) >= 3:
-            matches.append({
-                "file": parts[0],
-                "line": parts[1],
-                "text": parts[2].strip(),
-            })
+            matches.append(
+                {
+                    "file": parts[0],
+                    "line": parts[1],
+                    "text": parts[2].strip(),
+                }
+            )
     return matches
 
 
-def graphify(repo_path: str | Path, output_dir: str | Path = None,
-             mode: str = "default", timeout: int = 300) -> str:
+def graphify(
+    repo_path: str | Path,
+    output_dir: str | Path = None,
+    mode: str = "default",
+    timeout: int = 300,
+) -> str:
     """Build a knowledge graph of a repo using graphify.
 
     Returns the GRAPH_REPORT.md content if generated, else raw output.
@@ -137,7 +150,15 @@ def graphify(repo_path: str | Path, output_dir: str | Path = None,
     """
     repo = Path(repo_path)
     out = Path(output_dir) if output_dir else repo / "graphify-out"
-    cmd = [sys.executable, "-m", "graphify", str(repo), "--output", str(out), "--no-viz"]
+    cmd = [
+        sys.executable,
+        "-m",
+        "graphify",
+        str(repo),
+        "--output",
+        str(out),
+        "--no-viz",
+    ]
     if mode == "deep":
         cmd += ["--mode", "deep"]
     r = run(cmd, cwd=repo, timeout=timeout)

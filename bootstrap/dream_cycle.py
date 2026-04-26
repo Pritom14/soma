@@ -1,4 +1,3 @@
-from __future__ import annotations
 """
 bootstrap/dream_cycle.py — SOMA's nightly consolidation loop.
 
@@ -17,10 +16,13 @@ Run manually:
 Or via cron (nightly at 3am):
     0 3 * * * cd ~/Desktop/soma && python3 main.py --dream-cycle >> comms/outbox/cron.log 2>&1
 """
+
+from __future__ import annotations
+
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from config import TIER_2_MODEL, TIER_3_MODEL, ACTIVE_DOMAIN
+from config import TIER_2_MODEL, TIER_3_MODEL
 from core.belief import BeliefStore
 from core.experience import ExperienceStore
 from core.brain import BrainStore
@@ -59,6 +61,7 @@ def run(verbose: bool = True) -> dict:
         print("[Dream] Step 6: Introspection")
     try:
         from core.belief import BeliefStore as _BS
+
         identity = IdentityStore()
         engine = IntrospectionEngine()
         self_bs = _BS("self")
@@ -82,6 +85,7 @@ def run(verbose: bool = True) -> dict:
     try:
         from core.failure_analyzer import SkillStore
         from datetime import datetime
+
         skill_store = SkillStore()
         skills = skill_store.all_skills()
         stale_count = 0
@@ -91,12 +95,10 @@ def run(verbose: bool = True) -> dict:
                 content = skill_path.read_text()
                 # Update last_validated timestamp
                 from datetime import datetime
+
                 now = datetime.utcnow().isoformat()
                 if "Last Validated:" in content:
-                    content = content.replace(
-                        "Last Validated: ",
-                        f"Last Validated: {now}"
-                    )
+                    content = content.replace("Last Validated: ", f"Last Validated: {now}")
                 skill_path.write_text(content)
             except Exception:
                 stale_count += 1
@@ -139,7 +141,9 @@ def run(verbose: bool = True) -> dict:
                     report["stale_beliefs_retested"] += 1
                     if verbose:
                         status = "confirmed" if result.confirmed else "challenged"
-                        print(f"[Dream]   Retested: '{belief.statement[:60]}' → {status} ({refreshed.confidence:.0%})")
+                        print(
+                            f"[Dream]   Retested: '{belief.statement[:60]}' → {status} ({refreshed.confidence:.0%})"
+                        )
             except Exception as e:
                 if verbose:
                     print(f"[Dream]   Retest failed for {belief.id}: {e}")
@@ -174,7 +178,9 @@ def run(verbose: bool = True) -> dict:
                 ts = s.get("timestamp", "")[:10]
                 updates = len(s.get("pr_updates", []))
                 na = s.get("next_action")
-                action_str = f"{na.get('type')} {na.get('repo', '')}#{na.get('issue', '')}" if na else "none"
+                action_str = (
+                    f"{na.get('type')} {na.get('repo', '')}#{na.get('issue', '')}" if na else "none"
+                )
                 summary_lines.append(f"[{ts}] {updates} PR updates, next={action_str}")
 
             summary_prompt = f"""Summarize these {len(recent_sessions)} SOMA work sessions into a concise 3-5 sentence paragraph capturing: what was accomplished, what patterns emerged, what is still pending.
@@ -263,6 +269,7 @@ Write the summary directly."""
         else:
             try:
                 import mlx_lm  # noqa: F401
+
                 _mlx_available = True
             except ImportError:
                 _mlx_available = False
@@ -284,6 +291,7 @@ Write the summary directly."""
                 checkpoints = sorted(adapter_dir.glob("*_adapters.safetensors"))
                 if checkpoints:
                     import shutil as _shutil
+
                     best = checkpoints[-1]
                     target = adapter_dir / "adapters.safetensors"
                     if target.exists():
@@ -298,35 +306,36 @@ Write the summary directly."""
 
     # --- Step 8: Harness introspection + self-modification ---
     if verbose:
-        print('\n[Dream] Step 8: Harness introspection + self-modification')
-    report['harness_improvements'] = 0
-    report['harness_analysis_safe'] = False
+        print("\n[Dream] Step 8: Harness introspection + self-modification")
+    report["harness_improvements"] = 0
+    report["harness_analysis_safe"] = False
     try:
         from core.harness_introspection import HarnessIntrospector
         from core.self_modifier import SelfModifier
+
         inspector = HarnessIntrospector(Path(__file__).parent.parent)
         engine = IntrospectionEngine()
         harness_patterns = engine.detect_harness_patterns(store)
-        self_bs = BeliefStore('self')
+        self_bs = BeliefStore("self")
         analysis = inspector.analyze(harness_patterns, self_bs.all())
         if verbose:
-            print(f'[Dream]   Components analyzed: {analysis.get("components_analyzed", 0)}')
-            print(f'[Dream]   Safety: {analysis["safety_assessment"]}')
-        report['harness_analysis_safe'] = analysis['safety_assessment'] == 'safe'
-        if analysis['safety_assessment'] == 'safe' and analysis.get('suggested_improvements'):
+            print(f"[Dream]   Components analyzed: {analysis.get('components_analyzed', 0)}")
+            print(f"[Dream]   Safety: {analysis['safety_assessment']}")
+        report["harness_analysis_safe"] = analysis["safety_assessment"] == "safe"
+        if analysis["safety_assessment"] == "safe" and analysis.get("suggested_improvements"):
             modifier = SelfModifier(Path(__file__).parent.parent, llm, TIER_3_MODEL)
             results = modifier.run_improvement_cycle(analysis)
             applied = [r for r in results if r.success]
-            report['harness_improvements'] = len(applied)
+            report["harness_improvements"] = len(applied)
             if verbose:
                 for r in results:
-                    status = 'APPLIED' if r.success else f'FAILED'
-                    print(f'[Dream]   {r.proposal.component}: {status}')
+                    status = "APPLIED" if r.success else "FAILED"
+                    print(f"[Dream]   {r.proposal.component}: {status}")
         elif verbose:
-            print(f'[Dream]   Skipping modifications: safety={analysis["safety_assessment"]}')
+            print(f"[Dream]   Skipping modifications: safety={analysis['safety_assessment']}")
     except Exception as e:
         if verbose:
-            print(f'[Dream]   Step 8 failed: {e}')
+            print(f"[Dream]   Step 8 failed: {e}")
 
     if verbose:
         print("\n" + "=" * 55)
@@ -436,4 +445,3 @@ def _run_finetune(verbose: bool = True) -> None:
         if train_backup.exists():
             _shutil.copy2(train_backup, train_src)
             train_backup.unlink(missing_ok=True)
-

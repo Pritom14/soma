@@ -10,12 +10,12 @@ Usage:
     contradictions = index.detect_contradictions()
     patterns = index.synthesize_patterns(llm, model)
 """
+
 from __future__ import annotations
 
 import json
 import re
 from dataclasses import dataclass
-from typing import Optional
 
 from config import DOMAINS, BELIEFS_DIR
 from core.belief import BeliefStore, Belief
@@ -35,8 +35,8 @@ class Contradiction:
 @dataclass
 class CrossPattern:
     domains: list[str]
-    pattern: str          # synthesized claim
-    support_count: int    # how many beliefs support this
+    pattern: str  # synthesized claim
+    support_count: int  # how many beliefs support this
     confidence: float
 
 
@@ -72,8 +72,20 @@ class BeliefIndex:
 
         Returns a list of Contradiction objects sorted by overlap_score desc.
         """
-        NEGATION = {"not", "never", "avoid", "without", "no", "stop", "prevent",
-                    "dont", "don't", "shouldn't", "should not", "never"}
+        NEGATION = {
+            "not",
+            "never",
+            "avoid",
+            "without",
+            "no",
+            "stop",
+            "prevent",
+            "dont",
+            "don't",
+            "shouldn't",
+            "should not",
+            "never",
+        }
 
         def _neg(text: str) -> bool:
             return bool(set(text.lower().split()) & NEGATION)
@@ -96,11 +108,17 @@ class BeliefIndex:
                 if overlap >= min_overlap:
                     neg_b = _neg(bb.statement)
                     if neg_a != neg_b:
-                        results.append(Contradiction(
-                            domain_a=da, belief_a_id=ba.id, belief_a=ba.statement,
-                            domain_b=db, belief_b_id=bb.id, belief_b=bb.statement,
-                            overlap_score=round(overlap, 3),
-                        ))
+                        results.append(
+                            Contradiction(
+                                domain_a=da,
+                                belief_a_id=ba.id,
+                                belief_a=ba.statement,
+                                domain_b=db,
+                                belief_b_id=bb.id,
+                                belief_b=bb.statement,
+                                overlap_score=round(overlap, 3),
+                            )
+                        )
 
         results.sort(key=lambda c: -c.overlap_score)
         return results
@@ -109,9 +127,9 @@ class BeliefIndex:
     # Pattern synthesis
     # ------------------------------------------------------------------
 
-    def synthesize_patterns(self, llm, model: str,
-                            min_confidence: float = 0.6,
-                            max_beliefs: int = 60) -> list[CrossPattern]:
+    def synthesize_patterns(
+        self, llm, model: str, min_confidence: float = 0.6, max_beliefs: int = 60
+    ) -> list[CrossPattern]:
         """
         Use an LLM to identify recurring themes across all high-confidence
         beliefs, regardless of domain. Returns a list of CrossPattern objects.
@@ -119,7 +137,8 @@ class BeliefIndex:
         Does NOT write beliefs — call write_to_self() to persist them.
         """
         candidates = [
-            (domain, b) for domain, b in self._all_beliefs
+            (domain, b)
+            for domain, b in self._all_beliefs
             if b.confidence >= min_confidence and b.is_actionable
         ]
         if not candidates:
@@ -161,12 +180,14 @@ Return ONLY the JSON array. Patterns must be actionable and non-trivial."""
         patterns: list[CrossPattern] = []
         for item in items[:5]:
             conf = round(min(0.75, 0.5 + item.get("support_count", 1) * 0.04), 4)
-            patterns.append(CrossPattern(
-                domains=item.get("domains", []),
-                pattern=item.get("pattern", ""),
-                support_count=item.get("support_count", 1),
-                confidence=conf,
-            ))
+            patterns.append(
+                CrossPattern(
+                    domains=item.get("domains", []),
+                    pattern=item.get("pattern", ""),
+                    support_count=item.get("support_count", 1),
+                    confidence=conf,
+                )
+            )
         return patterns
 
     def write_to_self(self, patterns: list[CrossPattern]) -> list[Belief]:
@@ -212,7 +233,6 @@ Return ONLY the JSON array. Patterns must be actionable and non-trivial."""
             "by_domain": by_domain,
             "high_confidence_count": len(high_conf),
             "top_beliefs": [
-                {"domain": d, "confidence": c, "statement": s[:80]}
-                for c, d, s in high_conf[:10]
+                {"domain": d, "confidence": c, "statement": s[:80]} for c, d, s in high_conf[:10]
             ],
         }

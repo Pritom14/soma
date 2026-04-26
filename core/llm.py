@@ -8,6 +8,7 @@ import anthropic
 
 _CAVEMAN_PATH = Path.home() / ".agents" / "skills" / "caveman" / "SKILL.md"
 
+
 def _caveman_rules() -> str:
     """Load caveman compression rules from installed skill, strip frontmatter."""
     if not _CAVEMAN_PATH.exists():
@@ -37,8 +38,10 @@ class LLMClient:
         try:
             available = {m["model"] for m in ollama.list()["models"]}
             # Normalise: ollama may store as "qwen2.5-coder:32b" or with digest suffix
-            return any(m == model or m.startswith(model.split(":")[0] + ":" + model.split(":")[-1])
-                       for m in available)
+            return any(
+                m == model or m.startswith(model.split(":")[0] + ":" + model.split(":")[-1])
+                for m in available
+            )
         except Exception:
             return False
 
@@ -54,12 +57,11 @@ class LLMClient:
         response = ollama.chat(model=model, messages=messages)
         return response["message"]["content"]
 
-    def _ask_anthropic(self, model: str, prompt: str, system: str = "",
-                       max_tokens: int = 2048) -> str:
+    def _ask_anthropic(
+        self, model: str, prompt: str, system: str = "", max_tokens: int = 2048
+    ) -> str:
         if not self._anthropic:
-            raise ValueError(
-                "ANTHROPIC_API_KEY not set. Export it to use cloud models."
-            )
+            raise ValueError("ANTHROPIC_API_KEY not set. Export it to use cloud models.")
         effective_system = system
         if self._caveman:
             rules = _caveman_rules()
@@ -77,9 +79,8 @@ class LLMClient:
 
     def ask_json(self, model: str, prompt: str, system: str = "") -> dict:
         full_system = (
-            (system + "\n\n" if system else "")
-            + "Always respond with valid JSON only. No markdown fences, no explanation outside JSON."
-        )
+            system + "\n\n" if system else ""
+        ) + "Always respond with valid JSON only. No markdown fences, no explanation outside JSON."
         raw = self.ask(model, prompt, full_system).strip()
         # Strip markdown fences if model adds them anyway
         if raw.startswith("```"):

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 core/brain.py — SOMA's compounding knowledge base.
 
@@ -20,10 +21,17 @@ BRAIN_DIR = BASE_DIR / "beliefs" / "brain"
 
 
 class BrainPage:
-    def __init__(self, slug: str, entity_type: str, entity_name: str,
-                 compiled_truth: str = "", timeline: list = None,
-                 last_updated: str = None, last_synthesized: str = None,
-                 tags: list = None):
+    def __init__(
+        self,
+        slug: str,
+        entity_type: str,
+        entity_name: str,
+        compiled_truth: str = "",
+        timeline: list = None,
+        last_updated: str = None,
+        last_synthesized: str = None,
+        tags: list = None,
+    ):
         self.slug = slug
         self.entity_type = entity_type
         self.entity_name = entity_name
@@ -79,8 +87,15 @@ class BrainStore:
         page.last_updated = datetime.utcnow().isoformat()
         self._path(page.slug).write_text(json.dumps(page.to_dict(), indent=2))
 
-    def add_timeline(self, slug: str, entity_type: str, entity_name: str,
-                     event: str, impact: str = "neutral", data: dict = None) -> BrainPage:
+    def add_timeline(
+        self,
+        slug: str,
+        entity_type: str,
+        entity_name: str,
+        event: str,
+        impact: str = "neutral",
+        data: dict = None,
+    ) -> BrainPage:
         page = self.get_or_create(slug, entity_type, entity_name)
         entry = {
             "ts": datetime.utcnow().isoformat(),
@@ -95,8 +110,9 @@ class BrainStore:
         self._save(page)
         return page
 
-    def update_compiled_truth(self, slug: str, entity_type: str,
-                               entity_name: str, new_truth: str) -> BrainPage:
+    def update_compiled_truth(
+        self, slug: str, entity_type: str, entity_name: str, new_truth: str
+    ) -> BrainPage:
         page = self.get_or_create(slug, entity_type, entity_name)
         page.compiled_truth = new_truth
         page.last_synthesized = datetime.utcnow().isoformat()
@@ -110,8 +126,7 @@ class BrainStore:
             return ""
         recent_events = page.timeline[-20:]
         events_text = "\n".join(
-            f"[{e['ts'][:10]}] [{e['impact']}] {e['event']}"
-            for e in recent_events
+            f"[{e['ts'][:10]}] [{e['impact']}] {e['event']}" for e in recent_events
         )
         prompt = (
             f"Synthesize SOMA's compiled knowledge about the repo: {repo}\n\n"
@@ -138,25 +153,29 @@ class BrainStore:
                 lines.append(f"  [{e['ts'][:10]}] {e['event']}")
         return "\n".join(lines)
 
-    def record_pr_outcome(self, repo: str, pr_number: int,
-                          merged: bool, review_notes: str = ""):
+    def record_pr_outcome(self, repo: str, pr_number: int, merged: bool, review_notes: str = ""):
         slug = f"repo-{repo.replace('/', '-')}"
         outcome = "merged" if merged else "rejected"
         event = f"PR #{pr_number} {outcome}"
         if review_notes:
             event += f": {review_notes[:100]}"
         self.add_timeline(
-            slug=slug, entity_type="repo", entity_name=repo,
+            slug=slug,
+            entity_type="repo",
+            entity_name=repo,
             event=event,
             impact="positive" if merged else "negative",
             data={"pr_number": pr_number, "merged": merged},
         )
 
-    def record_comment_learning(self, repo: str, pr_number: int,
-                                 comment_summary: str, sentiment: str):
+    def record_comment_learning(
+        self, repo: str, pr_number: int, comment_summary: str, sentiment: str
+    ):
         slug = f"repo-{repo.replace('/', '-')}"
         self.add_timeline(
-            slug=slug, entity_type="repo", entity_name=repo,
+            slug=slug,
+            entity_type="repo",
+            entity_name=repo,
             event=f"PR #{pr_number} comment: {comment_summary[:120]}",
             impact="learning",
             data={"pr_number": pr_number, "sentiment": sentiment},
@@ -165,7 +184,9 @@ class BrainStore:
     def record_correction(self, context: str, correction: str, source: str = "human"):
         slug = "soma-corrections"
         self.add_timeline(
-            slug=slug, entity_type="pattern", entity_name="SOMA corrections",
+            slug=slug,
+            entity_type="pattern",
+            entity_name="SOMA corrections",
             event=f"[{source}] correction on '{context[:60]}': {correction[:150]}",
             impact="learning",
             data={"context": context, "correction": correction, "source": source},

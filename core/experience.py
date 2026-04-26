@@ -6,10 +6,9 @@ import json
 import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Optional
 
-from config import DB_PATH, EXPERIENCES_DIR, EMBED_MODEL, EMBED_DIM
+from config import DB_PATH, EXPERIENCES_DIR, EMBED_MODEL
 
 
 @dataclass
@@ -79,9 +78,7 @@ class ExperienceStore:
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_context_hash ON experiences(context_hash)"
         )
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_domain ON experiences(domain)"
-        )
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_domain ON experiences(domain)")
         self.conn.commit()
 
     # ------------------------------------------------------------------
@@ -92,6 +89,7 @@ class ExperienceStore:
         if self._embedder is None:
             try:
                 import ollama
+
                 # Warm check
                 ollama.embeddings(model=EMBED_MODEL, prompt="test")
                 self._embedder = ollama
@@ -131,8 +129,16 @@ class ExperienceStore:
     # Core operations
     # ------------------------------------------------------------------
 
-    def record(self, domain: str, context: str, action: str, outcome: str,
-               success: bool, model_used: str, notes: str = "") -> "Experience":
+    def record(
+        self,
+        domain: str,
+        context: str,
+        action: str,
+        outcome: str,
+        success: bool,
+        model_used: str,
+        notes: str = "",
+    ) -> "Experience":
         now = datetime.utcnow().isoformat()
         context_hash = Experience.make_hash(context)
 
@@ -145,12 +151,24 @@ class ExperienceStore:
                 new_conf = existing.confidence * 0.7
             new_conf = round(min(0.99, max(0.01, new_conf)), 4)
 
-            self.conn.execute("""
+            self.conn.execute(
+                """
                 UPDATE experiences
                 SET outcome=?, success=?, confidence=?, test_count=?,
                     last_verified=?, model_used=?, notes=?
                 WHERE id=?
-            """, (outcome, int(success), new_conf, new_count, now, model_used, notes, existing.id))
+            """,
+                (
+                    outcome,
+                    int(success),
+                    new_conf,
+                    new_count,
+                    now,
+                    model_used,
+                    notes,
+                    existing.id,
+                ),
+            )
             self.conn.commit()
 
             existing.confidence = new_conf
@@ -175,9 +193,22 @@ class ExperienceStore:
         )
         self.conn.execute(
             "INSERT INTO experiences VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (exp.id, exp.domain, exp.context_hash, exp.context, exp.action,
-             exp.outcome, int(exp.success), exp.confidence, exp.test_count,
-             exp.model_used, exp.created_at, exp.last_verified, exp.decay_rate, exp.notes),
+            (
+                exp.id,
+                exp.domain,
+                exp.context_hash,
+                exp.context,
+                exp.action,
+                exp.outcome,
+                int(exp.success),
+                exp.confidence,
+                exp.test_count,
+                exp.model_used,
+                exp.created_at,
+                exp.last_verified,
+                exp.decay_rate,
+                exp.notes,
+            ),
         )
         self.conn.commit()
         # Embed asynchronously - don't block record()
@@ -277,9 +308,7 @@ class ExperienceStore:
     def stats(self) -> dict:
         total = self.conn.execute("SELECT COUNT(*) FROM experiences").fetchone()[0]
         by_domain = dict(
-            self.conn.execute(
-                "SELECT domain, COUNT(*) FROM experiences GROUP BY domain"
-            ).fetchall()
+            self.conn.execute("SELECT domain, COUNT(*) FROM experiences GROUP BY domain").fetchall()
         )
         avg_conf = self.conn.execute("SELECT AVG(confidence) FROM experiences").fetchone()[0] or 0
         embedded = self.conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]

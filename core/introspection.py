@@ -2,11 +2,9 @@ from __future__ import annotations
 import json
 import re
 from collections import defaultdict
-from datetime import datetime
 
 
 class IntrospectionEngine:
-
     def assess(self, store, beliefs, goals) -> dict:
         """Structured self-assessment from evidence."""
         result = {
@@ -27,8 +25,7 @@ class IntrospectionEngine:
             actionable = [b for b in all_beliefs if b.is_actionable]
             stale = [b for b in all_beliefs if not b.is_actionable]
             avg_conf = (
-                sum(b.confidence for b in actionable) / len(actionable)
-                if actionable else 0.0
+                sum(b.confidence for b in actionable) / len(actionable) if actionable else 0.0
             )
             result["belief_health"] = {
                 "total": len(all_beliefs),
@@ -71,9 +68,13 @@ class IntrospectionEngine:
                 continue
             rate = sum(1 for e in exps if e["success"]) / len(exps)
             if rate >= 0.85:
-                patterns.append(f"I am reliable at: {key} ({len(exps)} experiences, {rate:.0%} success)")
+                patterns.append(
+                    f"I am reliable at: {key} ({len(exps)} experiences, {rate:.0%} success)"
+                )
             elif rate <= 0.35:
-                patterns.append(f"I struggle with: {key} ({len(exps)} experiences, {rate:.0%} success)")
+                patterns.append(
+                    f"I struggle with: {key} ({len(exps)} experiences, {rate:.0%} success)"
+                )
         return patterns[:8]
 
     def detect_harness_patterns(self, store) -> list:
@@ -90,7 +91,9 @@ class IntrospectionEngine:
         groups = defaultdict(list)
         for row in rows:
             failure_class = row[3] or "unknown"
-            groups[failure_class].append({"success": bool(row[1]), "confidence": row[2], "context": row[0]})
+            groups[failure_class].append(
+                {"success": bool(row[1]), "confidence": row[2], "context": row[0]}
+            )
 
         patterns = []
         component_map = {
@@ -119,21 +122,24 @@ class IntrospectionEngine:
             suggested_fix = fix_hints.get(failure_class, "Review harness logic")
             samples = [e["context"][:60] for e in exps[:3]]
 
-            patterns.append({
-                "pattern_id": f"{component}-{failure_class.lower()}",
-                "component": component,
-                "failure_type": failure_class,
-                "frequency": len(exps),
-                "success_rate": rate,
-                "sample_contexts": samples,
-                "suggested_fix": suggested_fix,
-            })
+            patterns.append(
+                {
+                    "pattern_id": f"{component}-{failure_class.lower()}",
+                    "component": component,
+                    "failure_type": failure_class,
+                    "frequency": len(exps),
+                    "success_rate": rate,
+                    "sample_contexts": samples,
+                    "suggested_fix": suggested_fix,
+                }
+            )
 
         return patterns[:8]
 
     def form_meta_beliefs(self, store, all_beliefs: dict) -> list:
         """Crystallize patterns as domain=self beliefs."""
         from core.belief import BeliefStore
+
         created = []
         try:
             patterns = self.detect_patterns(store)
@@ -175,7 +181,15 @@ class IntrospectionEngine:
             )
             result = llm.ask_json(model, prompt)
             if isinstance(result, dict) and all(
-                k in result for k in ["purpose", "values", "style", "capabilities", "limitations", "non_negotiables"]
+                k in result
+                for k in [
+                    "purpose",
+                    "values",
+                    "style",
+                    "capabilities",
+                    "limitations",
+                    "non_negotiables",
+                ]
             ):
                 identity.update_from_introspection(result)
                 return result

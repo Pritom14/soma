@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 core/gbrain_client.py — GBrain CLI wrapper with native fallback.
 
@@ -13,7 +14,6 @@ so SOMA's autonomy features work regardless of whether gbrain is installed.
 """
 import json
 import subprocess
-from pathlib import Path
 from typing import Optional
 
 from core.brain import BrainStore
@@ -39,8 +39,7 @@ class GBrainClient:
     def _check_gbrain(self) -> bool:
         try:
             result = subprocess.run(
-                ["gbrain", "--version"],
-                capture_output=True, text=True, timeout=5
+                ["gbrain", "--version"], capture_output=True, text=True, timeout=5
             )
             return result.returncode == 0
         except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -54,8 +53,7 @@ class GBrainClient:
         if self._gbrain_available:
             try:
                 result = subprocess.run(
-                    ["gbrain", "get", slug],
-                    capture_output=True, text=True, timeout=10
+                    ["gbrain", "get", slug], capture_output=True, text=True, timeout=10
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     return {"slug": slug, "content": result.stdout.strip()}
@@ -64,7 +62,11 @@ class GBrainClient:
         # Native fallback
         page = self._native.get(slug)
         if page:
-            return {"slug": slug, "content": page.compiled_truth, "timeline": page.timeline}
+            return {
+                "slug": slug,
+                "content": page.compiled_truth,
+                "timeline": page.timeline,
+            }
         return None
 
     def put_page(self, slug: str, content: str) -> bool:
@@ -73,7 +75,10 @@ class GBrainClient:
             try:
                 result = subprocess.run(
                     ["gbrain", "put", slug],
-                    input=content, capture_output=True, text=True, timeout=15
+                    input=content,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
                 )
                 if result.returncode == 0:
                     return True
@@ -92,7 +97,9 @@ class GBrainClient:
             try:
                 result = subprocess.run(
                     ["gbrain", "search", query, "--limit", str(limit)],
-                    capture_output=True, text=True, timeout=10
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     # Try JSON parse; fall back to text lines
@@ -115,11 +122,16 @@ class GBrainClient:
             text_words = set(text.split())
             overlap = len(query_words & text_words)
             if overlap > 0:
-                results.append((overlap, {
-                    "slug": slug,
-                    "entity_name": page.entity_name,
-                    "content": page.compiled_truth[:200],
-                }))
+                results.append(
+                    (
+                        overlap,
+                        {
+                            "slug": slug,
+                            "entity_name": page.entity_name,
+                            "content": page.compiled_truth[:200],
+                        },
+                    )
+                )
         results.sort(key=lambda x: -x[0])
         return [r for _, r in results[:limit]]
 
@@ -129,7 +141,9 @@ class GBrainClient:
             try:
                 result = subprocess.run(
                     ["gbrain", "timeline", slug, "--entry", entry],
-                    capture_output=True, text=True, timeout=10
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
                 )
                 if result.returncode == 0:
                     return True
@@ -145,12 +159,12 @@ class GBrainClient:
     # Convenience methods that always use native BrainStore
     # (gbrain doesn't provide these as CLI commands)
 
-    def record_pr_outcome(self, repo: str, pr_number: int,
-                          merged: bool, notes: str = ""):
+    def record_pr_outcome(self, repo: str, pr_number: int, merged: bool, notes: str = ""):
         self._native.record_pr_outcome(repo, pr_number, merged, notes)
 
-    def record_comment_learning(self, repo: str, pr_number: int,
-                                 comment_summary: str, sentiment: str):
+    def record_comment_learning(
+        self, repo: str, pr_number: int, comment_summary: str, sentiment: str
+    ):
         self._native.record_comment_learning(repo, pr_number, comment_summary, sentiment)
 
     def record_correction(self, context: str, correction: str, source: str = "human"):

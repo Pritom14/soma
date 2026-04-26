@@ -17,14 +17,14 @@ Schema:
   updated_at TEXT
   result TEXT      — JSON blob written on completion
 """
+
 from __future__ import annotations
 
 import json
 import sqlite3
 import uuid
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
 from config import DB_PATH
@@ -35,8 +35,8 @@ class Task:
     id: str
     type: str
     priority: int
-    status: str                   # pending | running | done | failed | skipped
-    depends_on: list[str]         # task IDs this task depends on
+    status: str  # pending | running | done | failed | skipped
+    depends_on: list[str]  # task IDs this task depends on
     context: dict
     deadline: str = ""
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
@@ -65,17 +65,21 @@ class TaskQueue:
                 result      TEXT NOT NULL DEFAULT '{}'
             )
         """)
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, priority)"
-        )
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, priority)")
         self.conn.commit()
 
     # ------------------------------------------------------------------
     # Write
     # ------------------------------------------------------------------
 
-    def enqueue(self, type: str, context: dict, priority: int = 3,
-                depends_on: list[str] = None, deadline: str = "") -> Task:
+    def enqueue(
+        self,
+        type: str,
+        context: dict,
+        priority: int = 3,
+        depends_on: list[str] = None,
+        deadline: str = "",
+    ) -> Task:
         """Add a new task to the queue. Returns the created Task."""
         now = datetime.utcnow().isoformat()
         task = Task(
@@ -91,18 +95,23 @@ class TaskQueue:
         )
         self.conn.execute(
             "INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (task.id, task.type, task.priority, task.status,
-             ",".join(task.depends_on),
-             json.dumps(task.context),
-             task.deadline,
-             task.created_at, task.updated_at,
-             json.dumps(task.result)),
+            (
+                task.id,
+                task.type,
+                task.priority,
+                task.status,
+                ",".join(task.depends_on),
+                json.dumps(task.context),
+                task.deadline,
+                task.created_at,
+                task.updated_at,
+                json.dumps(task.result),
+            ),
         )
         self.conn.commit()
         return task
 
-    def update_status(self, task_id: str, status: str,
-                      result: dict = None) -> bool:
+    def update_status(self, task_id: str, status: str, result: dict = None) -> bool:
         """Update task status (and optional result). Returns True if found."""
         now = datetime.utcnow().isoformat()
         result_json = json.dumps(result or {})
@@ -127,8 +136,8 @@ class TaskQueue:
         ).fetchall()
 
         done_ids = {
-            r["id"] for r in
-            self.conn.execute("SELECT id FROM tasks WHERE status='done'").fetchall()
+            r["id"]
+            for r in self.conn.execute("SELECT id FROM tasks WHERE status='done'").fetchall()
         }
 
         for row in pending:
@@ -139,9 +148,7 @@ class TaskQueue:
         return None
 
     def get(self, task_id: str) -> Optional[Task]:
-        row = self.conn.execute(
-            "SELECT * FROM tasks WHERE id=?", (task_id,)
-        ).fetchone()
+        row = self.conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
         return self._row_to_task(row) if row else None
 
     def list(self, status: str = None, limit: int = 50) -> list[Task]:
@@ -158,9 +165,7 @@ class TaskQueue:
         return [self._row_to_task(r) for r in rows]
 
     def pending_count(self) -> int:
-        return self.conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE status='pending'"
-        ).fetchone()[0]
+        return self.conn.execute("SELECT COUNT(*) FROM tasks WHERE status='pending'").fetchone()[0]
 
     def stats(self) -> dict:
         rows = self.conn.execute(

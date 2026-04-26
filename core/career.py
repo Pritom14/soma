@@ -8,6 +8,7 @@ Workflow:
     print(result.score)            # 0-100
     evaluator.track(result, status="applied")
 """
+
 from __future__ import annotations
 
 import json
@@ -33,12 +34,12 @@ class JobEvalResult:
     title: str
     company: str
     location: str
-    score: int                          # 0-100
-    recommendation: str                  # APPLY / MAYBE / SKIP
-    dimension_scores: dict               # {dimension: score}
-    reasons: list[str]                   # why this score
-    red_flags: list[str]                 # blockers / concerns
-    cover_note: str = ""                 # tailored 3-sentence cover note
+    score: int  # 0-100
+    recommendation: str  # APPLY / MAYBE / SKIP
+    dimension_scores: dict  # {dimension: score}
+    reasons: list[str]  # why this score
+    red_flags: list[str]  # blockers / concerns
+    cover_note: str = ""  # tailored 3-sentence cover note
     raw_job_text: str = ""
     evaluated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 
@@ -61,7 +62,9 @@ class JobEvaluator:
         try:
             result = subprocess.run(
                 ["curl", "-sL", "--max-time", "10", url],
-                capture_output=True, text=True, timeout=15,
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
             if result.returncode == 0 and len(result.stdout) > 200:
                 # Strip HTML tags crudely
@@ -129,7 +132,7 @@ Return JSON:
 
         try:
             result = self._llm.ask_json(self._model, prompt)
-        except Exception as e:
+        except Exception:
             return self._evaluate_heuristic(job_text, source)
 
         score = int(result.get("weighted_total", 0))
@@ -167,10 +170,10 @@ Return JSON:
         prompt = f"""Write a 3-sentence cover note for this job application. Be specific, not generic.
 Mention the candidate's most relevant experience. Do not use filler phrases like "I am excited" or "I am passionate".
 
-Candidate: {candidate.get('name')} — {profile.get('total_yoe', 6)} years backend engineering
-Key highlights: {'; '.join(highlights)}
-Role: {eval_result.get('title')} at {eval_result.get('company')}
-Why fit: {'; '.join(eval_result.get('reasons', [])[:2])}
+Candidate: {candidate.get("name")} — {profile.get("total_yoe", 6)} years backend engineering
+Key highlights: {"; ".join(highlights)}
+Role: {eval_result.get("title")} at {eval_result.get("company")}
+Why fit: {"; ".join(eval_result.get("reasons", [])[:2])}
 
 Write the cover note only. No subject line, no greeting, no sign-off."""
 
@@ -191,13 +194,28 @@ Write the cover note only. No subject line, no greeting, no sign-off."""
         stack_hits = sum(1 for s in strong if s in text_lower)
         stack_score = min(100, stack_hits * 20)
 
-        senior_keywords = ["senior", "sde-3", "tech lead", "staff", "principal", "lead engineer"]
+        senior_keywords = [
+            "senior",
+            "sde-3",
+            "tech lead",
+            "staff",
+            "principal",
+            "lead engineer",
+        ]
         junior_keywords = ["junior", "fresher", "0-2 years", "entry level"]
         seniority_score = 80 if any(k in text_lower for k in senior_keywords) else 30
         if any(k in text_lower for k in junior_keywords):
             seniority_score = 0
 
-        location_kw = ["bangalore", "bengaluru", "remote", "india", "london", "dubai", "singapore"]
+        location_kw = [
+            "bangalore",
+            "bengaluru",
+            "remote",
+            "india",
+            "london",
+            "dubai",
+            "singapore",
+        ]
         location_score = 80 if any(k in text_lower for k in location_kw) else 40
 
         score = int(stack_score * 0.4 + seniority_score * 0.35 + location_score * 0.25)
@@ -210,14 +228,23 @@ Write the cover note only. No subject line, no greeting, no sign-off."""
             location="(parse manually)",
             score=score,
             recommendation=rec,
-            dimension_scores={"tech_stack_match": stack_score, "seniority_level": seniority_score, "location_match": location_score},
+            dimension_scores={
+                "tech_stack_match": stack_score,
+                "seniority_level": seniority_score,
+                "location_match": location_score,
+            },
             reasons=[f"Matched {stack_hits} core tech keywords"],
             red_flags=["No LLM available — heuristic scoring only"],
             raw_job_text=job_text[:500],
         )
 
-    def track(self, result: JobEvalResult, status: str = "evaluated",
-              job_url: str = "", notes: str = "") -> Path:
+    def track(
+        self,
+        result: JobEvalResult,
+        status: str = "evaluated",
+        job_url: str = "",
+        notes: str = "",
+    ) -> Path:
         """Save application to beliefs/career/applications/."""
         record = {
             "job_id": result.job_id,
@@ -260,11 +287,16 @@ Write the cover note only. No subject line, no greeting, no sign-off."""
         return {
             "total": len(apps),
             "by_status": by_status,
-            "apply_candidates": [a for a in apps if a.get("recommendation") == "APPLY" and a.get("status") == "evaluated"],
+            "apply_candidates": [
+                a
+                for a in apps
+                if a.get("recommendation") == "APPLY" and a.get("status") == "evaluated"
+            ],
         }
 
-    def update_application_status(self, job_id: str, new_status: str,
-                                   notes: str = "") -> Optional[Path]:
+    def update_application_status(
+        self, job_id: str, new_status: str, notes: str = ""
+    ) -> Optional[Path]:
         """
         Update the status of a tracked application and record the outcome.
 
@@ -275,8 +307,14 @@ Write the cover note only. No subject line, no greeting, no sign-off."""
         Returns the updated file path, or None if job_id not found.
         """
         VALID_STATUSES = {
-            "evaluated", "applied", "screening", "interview",
-            "offer", "accepted", "rejected", "withdrawn",
+            "evaluated",
+            "applied",
+            "screening",
+            "interview",
+            "offer",
+            "accepted",
+            "rejected",
+            "withdrawn",
         }
         if new_status not in VALID_STATUSES:
             raise ValueError(f"Unknown status '{new_status}'. Valid: {VALID_STATUSES}")
@@ -306,12 +344,14 @@ Write the cover note only. No subject line, no greeting, no sign-off."""
 
         # Append to status_history
         history = matched.get("status_history", [])
-        history.append({
-            "from": old_status,
-            "to": new_status,
-            "at": matched["updated_at"],
-            "notes": notes,
-        })
+        history.append(
+            {
+                "from": old_status,
+                "to": new_status,
+                "at": matched["updated_at"],
+                "notes": notes,
+            }
+        )
         matched["status_history"] = history
 
         matched_path.write_text(json.dumps(matched, indent=2))

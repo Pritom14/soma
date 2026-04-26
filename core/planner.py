@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 core/planner.py - Pre-execution planning phase.
 Generates a structured step-by-step plan before CodeAct execution.
@@ -86,7 +87,11 @@ def generate_plan(
     try:
         raw = llm.ask(model, prompt, system=_PLANNER_SYSTEM)
     except Exception:
-        return ExecutionPlan(goal=task, valid=False, validation_errors=["Planner timed out — running without plan"])
+        return ExecutionPlan(
+            goal=task,
+            valid=False,
+            validation_errors=["Planner timed out — running without plan"],
+        )
 
     raw = raw.strip()
     if raw.startswith("```"):
@@ -147,6 +152,8 @@ def plan_to_context(plan: ExecutionPlan) -> str:
     if plan.notes:
         lines.append(f"Notes: {plan.notes}")
     return "\n".join(lines)
+
+
 # Split any complex plan steps into smaller atomic operations.
 def decompose_complex_steps(plan: ExecutionPlan, llm: LLMClient, model: str) -> ExecutionPlan:
     if not plan.steps:
@@ -154,10 +161,23 @@ def decompose_complex_steps(plan: ExecutionPlan, llm: LLMClient, model: str) -> 
 
     new_steps = []
     for step in plan.steps:
-        if len(step.replace) > 200 or step.replace.count("def ") > 1 or step.replace.count("class ") > 0:
+        if (
+            len(step.replace) > 200
+            or step.replace.count("def ") > 1
+            or step.replace.count("class ") > 0
+        ):
             try:
                 sys_prompt = "You are a code change planner. Split this step into 2-4 atomic sub-steps. Output only a JSON array of objects with keys: step_id, description, file, find, replace. No explanation."
-                user_prompt = "Step: " + step.description + " | File: " + step.file + " | Find: " + step.find[:200] + " | Replace: " + step.replace[:200]
+                user_prompt = (
+                    "Step: "
+                    + step.description
+                    + " | File: "
+                    + step.file
+                    + " | Find: "
+                    + step.find[:200]
+                    + " | Replace: "
+                    + step.replace[:200]
+                )
                 response = llm.ask(model, user_prompt, system=sys_prompt)
                 sub_steps_raw = json.loads(response)
                 parsed = [PlanStep(**s) for s in sub_steps_raw if isinstance(s, dict)]
@@ -173,4 +193,3 @@ def decompose_complex_steps(plan: ExecutionPlan, llm: LLMClient, model: str) -> 
 
     plan.steps = DependencyAnalyzer().reorder(new_steps)
     return plan
-

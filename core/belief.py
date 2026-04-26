@@ -2,8 +2,6 @@ import json
 import uuid
 from dataclasses import dataclass, asdict
 from datetime import datetime
-from pathlib import Path
-from typing import Optional
 
 from config import BELIEFS_DIR
 
@@ -38,8 +36,9 @@ class BeliefStore:
         data = {k: asdict(v) for k, v in self.beliefs.items()}
         self.path.write_text(json.dumps(data, indent=2))
 
-    def crystallize(self, experience_id: str, statement: str,
-                    confidence: float, domain: str) -> "Belief":
+    def crystallize(
+        self, experience_id: str, statement: str, confidence: float, domain: str
+    ) -> "Belief":
         # Reinforce if matching belief already exists
         for belief in self.beliefs.values():
             if belief.statement.lower().strip() == statement.lower().strip():

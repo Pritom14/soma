@@ -2,32 +2,33 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+
 @dataclass
 class DepNode:
     step_index: int
     defines: list[str] = field(default_factory=list)
     uses: list[str] = field(default_factory=list)
 
-class DependencyAnalyzer:
 
+class DependencyAnalyzer:
     def extract_defines(self, text: str) -> list[str]:
         # Extract function/class names defined in this step
         names = []
-        for m in re.finditer(r'^\s*(?:def|class)\s+(\w+)', text, re.MULTILINE):
+        for m in re.finditer(r"^\s*(?:def|class)\s+(\w+)", text, re.MULTILINE):
             names.append(m.group(1))
         return names
 
     def extract_uses(self, text: str) -> list[str]:
         # Extract names called/instantiated in this step
         names = []
-        for m in re.finditer(r'\b(\w+)\s*\(', text):
+        for m in re.finditer(r"\b(\w+)\s*\(", text):
             names.append(m.group(1))
         return list(set(names))
 
     def build_nodes(self, steps: list) -> list[DepNode]:
         nodes = []
         for i, step in enumerate(steps):
-            text = getattr(step, 'replace', '') or getattr(step, 'description', '') or str(step)
+            text = getattr(step, "replace", "") or getattr(step, "description", "") or str(step)
             node = DepNode(step_index=i)
             node.defines = self.extract_defines(text)
             node.uses = self.extract_uses(text)
@@ -86,7 +87,7 @@ class DependencyAnalyzer:
                 if neighbor not in visited:
                     dfs(neighbor)
                 elif neighbor in rec_stack:
-                    cycles.append(f'cycle: {neighbor} -> {node}')
+                    cycles.append(f"cycle: {neighbor} -> {node}")
             rec_stack.discard(node)
 
         for node in deps:

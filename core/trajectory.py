@@ -10,6 +10,7 @@ Usage:
     traj.record_step(human_turn=task, gpt_turn=response, tool_name="llm_ask")
     traj.finish(success=True)   # async write, returns immediately
 """
+
 from __future__ import annotations
 
 import fcntl
@@ -17,7 +18,6 @@ import json
 import threading
 import uuid
 from datetime import datetime
-from pathlib import Path
 
 from config import BASE_DIR
 
@@ -36,14 +36,21 @@ class TrajectoryRecorder:
     def __init__(self, domain: str, model_name: str):
         self._domain = domain
         self._model_name = model_name
-        self._trajectory_id = f"{domain}_{datetime.utcnow().strftime('%Y%m%d')}_{str(uuid.uuid4())[:8]}"
+        self._trajectory_id = (
+            f"{domain}_{datetime.utcnow().strftime('%Y%m%d')}_{str(uuid.uuid4())[:8]}"
+        )
         self._conversations: list[dict] = []
         self._tool_stats: dict[str, dict] = {}
         self._api_calls: int = 0
         self._started_at: str = datetime.utcnow().isoformat()
 
-    def record_step(self, human_turn: str, gpt_turn: str,
-                    tool_name: str = "", tool_success: bool = True) -> None:
+    def record_step(
+        self,
+        human_turn: str,
+        gpt_turn: str,
+        tool_name: str = "",
+        tool_success: bool = True,
+    ) -> None:
         """
         Record one human→gpt exchange. Optionally tag it with the tool used.
         This method is synchronous and in-memory only — no I/O.
@@ -88,9 +95,7 @@ class TrajectoryRecorder:
             "completed": success,
             "partial": has_content and not success,
             "tool_stats": self._tool_stats,
-            "tool_error_counts": {
-                k: v["failure"] for k, v in self._tool_stats.items()
-            },
+            "tool_error_counts": {k: v["failure"] for k, v in self._tool_stats.items()},
             "toolsets_used": [self._domain],
             "api_calls": self._api_calls,
             "failed": not success,

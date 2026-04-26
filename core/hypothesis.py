@@ -14,13 +14,19 @@ class Hypothesis:
     specimen_code: str
     specimen_language: str
     test_question: str
-    oracle_type: str        # "verifier" | "comparison"
+    oracle_type: str  # "verifier" | "comparison"
     expected_outcome: str
     created_at: str
 
 
 _CLAIM_KEYWORDS = {
-    "structural": ["type hint", "single responsibility", "naming", "docstring", "format"],
+    "structural": [
+        "type hint",
+        "single responsibility",
+        "naming",
+        "docstring",
+        "format",
+    ],
     "resilience": ["fail", "timeout", "retry", "error", "exception", "fallback"],
     "performance": ["index", "n+1", "query", "cache", "slow"],
     "process": ["understand", "root cause", "symptom", "test", "refactor"],

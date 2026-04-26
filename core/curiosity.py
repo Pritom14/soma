@@ -1,5 +1,4 @@
 from __future__ import annotations
-import math
 from datetime import datetime
 from core.belief import Belief, BeliefStore
 from core.experience import ExperienceStore
@@ -13,9 +12,7 @@ class CuriosityEngine:
 
     def score(self, belief: Belief) -> float:
         return round(
-            self._staleness(belief)
-            * self._uncertainty(belief)
-            * self._age_weight(belief)
+            self._staleness(belief) * self._uncertainty(belief) * self._age_weight(belief)
             + self._contradiction_bonus(belief),
             4,
         )

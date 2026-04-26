@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 core/pr_monitor.py - Track SOMA-raised PRs and learn from review comments.
 
@@ -22,6 +23,7 @@ from core import github
 # Data classes
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class TrackedPR:
     id: str
@@ -40,14 +42,15 @@ class CommentSignal:
     comment_id: str
     author: str
     body: str
-    sentiment: str          # "positive" | "negative" | "neutral"
-    confidence_delta: float # how much to nudge belief confidence
-    summary: str            # one-line human-readable summary
+    sentiment: str  # "positive" | "negative" | "neutral"
+    confidence_delta: float  # how much to nudge belief confidence
+    summary: str  # one-line human-readable summary
 
 
 # ---------------------------------------------------------------------------
 # Registry (backed by soma.db)
 # ---------------------------------------------------------------------------
+
 
 class PRRegistry:
     def __init__(self):
@@ -71,8 +74,9 @@ class PRRegistry:
         """)
         self.conn.commit()
 
-    def register(self, repo: str, pr_number: int, description: str,
-                 belief_ids: list[str] = None) -> TrackedPR:
+    def register(
+        self, repo: str, pr_number: int, description: str, belief_ids: list[str] = None
+    ) -> TrackedPR:
         # Avoid duplicates
         existing = self._find(repo, pr_number)
         if existing:
@@ -91,17 +95,23 @@ class PRRegistry:
         )
         self.conn.execute(
             "INSERT INTO pr_tracking VALUES (?,?,?,?,?,?,?,?,?)",
-            (pr.id, pr.repo, pr.pr_number, pr.description,
-             json.dumps(pr.belief_ids), json.dumps(pr.seen_comment_ids),
-             pr.registered_at, pr.last_polled, int(pr.closed)),
+            (
+                pr.id,
+                pr.repo,
+                pr.pr_number,
+                pr.description,
+                json.dumps(pr.belief_ids),
+                json.dumps(pr.seen_comment_ids),
+                pr.registered_at,
+                pr.last_polled,
+                int(pr.closed),
+            ),
         )
         self.conn.commit()
         return pr
 
     def get_open(self) -> list[TrackedPR]:
-        rows = self.conn.execute(
-            "SELECT * FROM pr_tracking WHERE closed=0"
-        ).fetchall()
+        rows = self.conn.execute("SELECT * FROM pr_tracking WHERE closed=0").fetchall()
         return [self._row(r) for r in rows]
 
     def get_all(self) -> list[TrackedPR]:
@@ -156,14 +166,36 @@ class PRRegistry:
 # ---------------------------------------------------------------------------
 
 _POSITIVE_PATTERNS = [
-    "lgtm", "looks good", "great", "approved", "merged", "ship it",
-    "nice work", "well done", "thank you", "thanks for", "perfect",
-    "good catch", "fair point", "good point",
+    "lgtm",
+    "looks good",
+    "great",
+    "approved",
+    "merged",
+    "ship it",
+    "nice work",
+    "well done",
+    "thank you",
+    "thanks for",
+    "perfect",
+    "good catch",
+    "fair point",
+    "good point",
 ]
 _NEGATIVE_PATTERNS = [
-    "please fix", "needs changes", "request changes", "wrong",
-    "incorrect", "bug", "broken", "fails", "this breaks", "potential issue",
-    "should be", "missing", "not correct", "issue here",
+    "please fix",
+    "needs changes",
+    "request changes",
+    "wrong",
+    "incorrect",
+    "bug",
+    "broken",
+    "fails",
+    "this breaks",
+    "potential issue",
+    "should be",
+    "missing",
+    "not correct",
+    "issue here",
 ]
 _BOT_AUTHORS = {"cursor[bot]", "github-actions[bot]", "dependabot[bot]"}
 
@@ -190,12 +222,12 @@ def _classify_llm(body: str, author: str, llm, model: str) -> tuple[str, float, 
     """LLM-based classification for ambiguous comments."""
     prompt = (
         f"A pull request received this review comment from '{author}':\n\n"
-        f"\"{body[:400]}\"\n\n"
+        f'"{body[:400]}"\n\n'
         "Classify the sentiment and impact on the PR author's credibility.\n"
         "Return JSON with keys:\n"
         '  sentiment: "positive" | "negative" | "neutral"\n'
-        '  confidence_delta: float between -0.10 and +0.05\n'
-        '  summary: one short sentence\n'
+        "  confidence_delta: float between -0.10 and +0.05\n"
+        "  summary: one short sentence\n"
         "Only return the JSON object, nothing else."
     )
     try:
@@ -222,12 +254,14 @@ def classify_comment(body: str, author: str, llm=None, model: str = "") -> tuple
 # Monitor — main polling logic
 # ---------------------------------------------------------------------------
 
+
 class PRMonitor:
     def __init__(self):
         self.registry = PRRegistry()
 
-    def register(self, repo: str, pr_number: int, description: str,
-                 belief_ids: list[str] = None) -> TrackedPR:
+    def register(
+        self, repo: str, pr_number: int, description: str, belief_ids: list[str] = None
+    ) -> TrackedPR:
         pr = self.registry.register(repo, pr_number, description, belief_ids)
         return pr
 
@@ -243,8 +277,9 @@ class PRMonitor:
         b = belief_stores.beliefs.get(belief_id)
         return (belief_stores, b) if b else (None, None)
 
-    def poll(self, belief_store, exp_store, llm=None, model: str = "",
-             verbose: bool = True) -> list[dict]:
+    def poll(
+        self, belief_store, exp_store, llm=None, model: str = "", verbose: bool = True
+    ) -> list[dict]:
         """
         Poll all open tracked PRs. For each:
           - Check PR state (merged / closed)
@@ -281,7 +316,9 @@ class PRMonitor:
                         store.update_from_pr(belief_id, merged=merged)
                         b = store.beliefs.get(belief_id)
                     if b and verbose:
-                        print(f"[PRMonitor]   Belief '{b.statement[:55]}...' conf={b.confidence:.0%}")
+                        print(
+                            f"[PRMonitor]   Belief '{b.statement[:55]}...' conf={b.confidence:.0%}"
+                        )
                 # Record outcome experience
                 exp_store.record(
                     domain="oss_contribution",
@@ -292,19 +329,22 @@ class PRMonitor:
                     model_used="soma",
                 )
                 self.registry.mark_closed(pr.id)
-                updates.append({"pr": f"{pr.repo}#{pr.pr_number}", "outcome": state, "merged": merged})
+                updates.append(
+                    {
+                        "pr": f"{pr.repo}#{pr.pr_number}",
+                        "outcome": state,
+                        "merged": merged,
+                    }
+                )
                 continue
 
             # 2. Fetch all comments (issue-level + inline review)
             all_comments = github.get_pr_all_comments(pr.repo, pr.pr_number)
-            new_comments = [
-                c for c in all_comments
-                if str(c["id"]) not in pr.seen_comment_ids
-            ]
+            new_comments = [c for c in all_comments if str(c["id"]) not in pr.seen_comment_ids]
 
             if not new_comments:
                 if verbose:
-                    print(f"[PRMonitor]   No new comments.")
+                    print("[PRMonitor]   No new comments.")
                 continue
 
             if verbose:
@@ -336,7 +376,9 @@ class PRMonitor:
                                 b.is_actionable = b.confidence >= 0.4
                             store._save()
                             if verbose:
-                                print(f"[PRMonitor]     Belief '{b.statement[:50]}...' {old:.0%} → {b.confidence:.0%}")
+                                print(
+                                    f"[PRMonitor]     Belief '{b.statement[:50]}...' {old:.0%} → {b.confidence:.0%}"
+                                )
 
                 # Record as experience
                 exp_store.record(
@@ -350,14 +392,16 @@ class PRMonitor:
                 )
 
                 new_seen_ids.append(cid)
-                updates.append({
-                    "pr": f"{pr.repo}#{pr.pr_number}",
-                    "comment_id": cid,
-                    "author": author,
-                    "sentiment": sentiment,
-                    "summary": summary,
-                    "delta": delta,
-                })
+                updates.append(
+                    {
+                        "pr": f"{pr.repo}#{pr.pr_number}",
+                        "comment_id": cid,
+                        "author": author,
+                        "sentiment": sentiment,
+                        "summary": summary,
+                        "delta": delta,
+                    }
+                )
 
             self.registry.mark_seen(pr.id, new_seen_ids)
 

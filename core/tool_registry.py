@@ -24,13 +24,25 @@ class ToolRegistry:
         r = self.repo
         if (r / "pyproject.toml").exists():
             txt = (r / "pyproject.toml").read_text()
-            self._tools["test"] = Tool("test", ["python3", "-m", "pytest", "tests/", "-v", "--tb=short"], "Run pytest", 90)
+            self._tools["test"] = Tool(
+                "test",
+                ["python3", "-m", "pytest", "tests/", "-v", "--tb=short"],
+                "Run pytest",
+                90,
+            )
             if "[tool.ruff]" in txt:
                 self._tools["lint"] = Tool("lint", ["ruff", "check", "."], "Run ruff", 30)
             if "[tool.mypy]" in txt:
-                self._tools["types"] = Tool("types", ["mypy", ".", "--ignore-missing-imports"], "Run mypy", 45)
+                self._tools["types"] = Tool(
+                    "types", ["mypy", ".", "--ignore-missing-imports"], "Run mypy", 45
+                )
         elif (r / "setup.py").exists():
-            self._tools["test"] = Tool("test", ["python3", "-m", "pytest", "tests/", "-v", "--tb=short"], "Run pytest", 90)
+            self._tools["test"] = Tool(
+                "test",
+                ["python3", "-m", "pytest", "tests/", "-v", "--tb=short"],
+                "Run pytest",
+                90,
+            )
         if (r / "package.json").exists():
             try:
                 data = json.loads((r / "package.json").read_text())
@@ -42,7 +54,14 @@ class ToolRegistry:
         if (r / "Makefile").exists():
             for line in (r / "Makefile").read_text().splitlines():
                 m = re.match(r"^([a-zA-Z][a-zA-Z0-9_-]*):", line)
-                if m and m.group(1) in ("test", "lint", "build", "check", "typecheck", "verify"):
+                if m and m.group(1) in (
+                    "test",
+                    "lint",
+                    "build",
+                    "check",
+                    "typecheck",
+                    "verify",
+                ):
                     key = m.group(1)
                     self._tools[key] = Tool(key, ["make", key], f"make {key}", 120)
         if (r / "go.mod").exists():
@@ -64,8 +83,11 @@ class ToolRegistry:
             return False, "", f"tool not found: {name}"
         try:
             r = subprocess.run(
-                tool.command, cwd=str(cwd or self.repo),
-                capture_output=True, text=True, timeout=tool.timeout,
+                tool.command,
+                cwd=str(cwd or self.repo),
+                capture_output=True,
+                text=True,
+                timeout=tool.timeout,
             )
             return r.returncode == 0, r.stdout, r.stderr
         except subprocess.TimeoutExpired:

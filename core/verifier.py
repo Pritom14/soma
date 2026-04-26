@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 core/verifier.py - Domain-specific verification.
 TypeScript (pnpm) for agent-orchestrator.
@@ -84,17 +85,26 @@ def _verify_typescript(repo: Path) -> VerifyResult:
     web_build_ok = None
     web_tests_ok = None
     if _web_package_changed(repo):
-        r = run(["pnpm", "--filter", "@aoagents/ao-web", "build"],
-                cwd=repo, timeout=300)
+        r = run(["pnpm", "--filter", "@aoagents/ao-web", "build"], cwd=repo, timeout=300)
         details["web_build"] = r.tail(40)
         web_build_ok = r.success
 
         # 1c. Web server tests — matches CI test-web job
         # direct-terminal-ws.integration.test.ts fails without a live tmux server;
         # treat exit 1 as pass when it is the only failing file
-        r = run(["pnpm", "--filter", "@aoagents/ao-web", "exec",
-                 "vitest", "run", "server/__tests__/"],
-                cwd=repo, timeout=120)
+        r = run(
+            [
+                "pnpm",
+                "--filter",
+                "@aoagents/ao-web",
+                "exec",
+                "vitest",
+                "run",
+                "server/__tests__/",
+            ],
+            cwd=repo,
+            timeout=120,
+        )
         details["web_tests"] = r.tail(30)
         web_tests_ok = r.success or (
             r.returncode == 1
@@ -105,15 +115,12 @@ def _verify_typescript(repo: Path) -> VerifyResult:
 
     # 2. Tests (Vitest) — each package's test script already runs `vitest run`
     # Timeout: full monorepo suite can take 3-4 min; 300s gives headroom
-    r = run(["pnpm", "-r", "--filter", "!@aoagents/ao-web", "test"],
-            cwd=repo, timeout=300)
+    r = run(["pnpm", "-r", "--filter", "!@aoagents/ao-web", "test"], cwd=repo, timeout=300)
     details["tests"] = r.tail(40)
     # pnpm exits 0 when all test files pass; treat non-zero as failure
     # but ignore exit code 1 produced only by signal interrupts in tmux fixtures
     tests_ok = r.success or (
-        r.returncode == 1
-        and "Test Files" in r.output
-        and " failed" not in r.output.lower()
+        r.returncode == 1 and "Test Files" in r.output and " failed" not in r.output.lower()
     )
 
     # 3. Lint
@@ -146,8 +153,7 @@ def _verify_python(repo: Path) -> VerifyResult:
     details = {}
 
     # Tests
-    r = run(["python3", "-m", "pytest", "tests/", "-v", "--tb=short"],
-            cwd=repo, timeout=90)
+    r = run(["python3", "-m", "pytest", "tests/", "-v", "--tb=short"], cwd=repo, timeout=90)
     details["tests"] = r.tail(40)
     tests_ok = r.success
 

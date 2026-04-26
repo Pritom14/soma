@@ -26,3 +26,25 @@ dev = [
 [build-system]
 requires = ['setuptools>=65.0', 'wheel']
 build-backend = 'setuptools.build_meta'
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = [
+    "E402",  # Module level import not at top of file (allowed after docstring)
+    "E501",  # Line too long (docstrings and prompts are allowed to exceed limit)
+    "E741",  # Ambiguous variable names
+    "F841",  # Unused variables (helper assignments)
+]
+exclude = [
+    ".git",
+    "__pycache__",
+    "build",
+    "dist",
+    ".venv",
+    "tests",
+    "scripts",
+]

@@ -8,6 +8,7 @@ This gives SOMA its first beliefs so it isn't completely naive on day one.
 Like a baby being told "stove is hot" before touching it - they still learn
 from experience, but start with inherited wisdom.
 """
+
 import sys
 import json
 from pathlib import Path
@@ -45,7 +46,7 @@ def seed_domain(domain: str, primitives: list[dict]):
 
         print(f"  + {p['context'][:65]}...")
 
-    print(f"  Done.")
+    print("  Done.")
 
 
 def run():

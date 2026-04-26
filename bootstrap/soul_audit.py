@@ -14,6 +14,7 @@ QUESTIONS = [
 
 def run(interactive: bool = True) -> dict:
     from core.identity import IdentityStore
+
     identity = IdentityStore()
     defaults = identity.DEFAULT_SOUL.copy()
     soul = {}
@@ -36,6 +37,7 @@ def run(interactive: bool = True) -> dict:
 
     try:
         from bootstrap.cradle import seed_domain
+
         prims_path = Path(__file__).parent / "primitives" / "self.json"
         if prims_path.exists():
             primitives = json.loads(prims_path.read_text())

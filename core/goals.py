@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 core/goals.py - Persistent goals SOMA tracks across sessions.
 
@@ -7,8 +8,7 @@ Each goal has a target, a current value, and a status.
 """
 import json
 from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
-from pathlib import Path
+from datetime import datetime
 from typing import Optional
 
 from config import BASE_DIR
@@ -16,8 +16,8 @@ from config import BASE_DIR
 GOALS_PATH = BASE_DIR / "goals.json"
 
 # Confidence thresholds for the gate
-GATE_ACT     = 0.68   # >= this: act autonomously
-GATE_GATHER  = 0.45   # >= this: act with extra caution / gather more context first
+GATE_ACT = 0.68  # >= this: act autonomously
+GATE_GATHER = 0.45  # >= this: act with extra caution / gather more context first
 # below GATE_GATHER: surface to human
 
 
@@ -27,9 +27,9 @@ class Goal:
     description: str
     target_value: float
     current_value: float
-    unit: str               # "prs_per_week" | "confidence" | "hours" | "count"
-    met_count: int          # times this goal was hit
-    missed_count: int       # times this goal was missed
+    unit: str  # "prs_per_week" | "confidence" | "hours" | "count"
+    met_count: int  # times this goal was hit
+    missed_count: int  # times this goal was missed
     last_checked: str
     is_active: bool = True
 
@@ -146,5 +146,7 @@ class GoalStore:
         for g in self.all():
             icon = "+" if g.met else "-"
             lines.append(f"  [{icon}] {g.description}")
-            lines.append(f"       {g.progress_line()} | hit {g.met_count}x | missed {g.missed_count}x")
+            lines.append(
+                f"       {g.progress_line()} | hit {g.met_count}x | missed {g.missed_count}x"
+            )
         return "\n".join(lines)

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 core/executor.py - CodeAct execution pattern.
 Agent writes a Python edit script → run it → observe outcome → self-correct.
@@ -8,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import subprocess as _sp
 
-from core.tools import run_python, read_file, RunResult
+from core.tools import run_python, RunResult
 from core.llm import LLMClient
 from core.tool_registry import ToolRegistry
 from core.snapshot import take_snapshot, restore_snapshot
@@ -18,8 +19,17 @@ MAX_ITERATIONS = 5
 
 # Config/orchestration file extensions that should use whole-file write
 WHOLE_FILE_EXTENSIONS = {
-    '.sh', '.bash', '.zsh', '.env', '.ini', '.cfg', '.toml',
-    '.conf', '.config', '.properties', 'Dockerfile',
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".env",
+    ".ini",
+    ".cfg",
+    ".toml",
+    ".conf",
+    ".config",
+    ".properties",
+    "Dockerfile",
 }
 
 
@@ -76,11 +86,16 @@ def execute_edit(
         if result.success:
             # Enforce SUCCESS marker — silent failures must be caught
             if "SUCCESS" not in result.stdout:
-                history.append((script, RunResult(
-                    returncode=1,
-                    stdout=result.stdout,
-                    stderr="[executor] No SUCCESS marker — edit may not have applied"
-                )))
+                history.append(
+                    (
+                        script,
+                        RunResult(
+                            returncode=1,
+                            stdout=result.stdout,
+                            stderr="[executor] No SUCCESS marker — edit may not have applied",
+                        ),
+                    )
+                )
                 continue
 
             changed = _detect_changed_files(script, repo)
@@ -97,13 +112,17 @@ def execute_edit(
                         iterations=iteration,
                         final_script=script,
                         output=result.output,
-                        error="Maker-checker failed on final iteration:\n" + "\n".join(check_errors),
+                        error="Maker-checker failed on final iteration:\n"
+                        + "\n".join(check_errors),
                     )
-                history[-1] = (script, RunResult(
-                    returncode=1,
-                    stdout=result.stdout,
-                    stderr="Maker-checker validation failed:\n" + "\n".join(check_errors)
-                ))
+                history[-1] = (
+                    script,
+                    RunResult(
+                        returncode=1,
+                        stdout=result.stdout,
+                        stderr="Maker-checker validation failed:\n" + "\n".join(check_errors),
+                    ),
+                )
                 continue
 
             # Run tests if available
@@ -113,12 +132,15 @@ def execute_edit(
                     test_result = test_tool.run(cwd=repo)
                     if not test_result.success:
                         restore_snapshot(snapshot)
-                        history[-1] = (script, RunResult(
-                            success=False,
-                            output=test_result.output,
-                            stderr=f"Tests failed:\n{test_result.output}",
-                            returncode=1
-                        ))
+                        history[-1] = (
+                            script,
+                            RunResult(
+                                success=False,
+                                output=test_result.output,
+                                stderr=f"Tests failed:\n{test_result.output}",
+                                returncode=1,
+                            ),
+                        )
                         continue
 
             return EditResult(
@@ -144,8 +166,14 @@ def execute_edit(
     )
 
 
-def _build_prompt(task: str, file_contexts: dict, history: list,
-                  beliefs: str, repo: Path, tools_ctx: str = "") -> str:
+def _build_prompt(
+    task: str,
+    file_contexts: dict,
+    history: list,
+    beliefs: str,
+    repo: Path,
+    tools_ctx: str = "",
+) -> str:
     lines = [f"Task: {task}", ""]
 
     if beliefs:
@@ -182,16 +210,16 @@ def _build_prompt(task: str, file_contexts: dict, history: list,
     # Inject harness meta-beliefs as executor warnings
     try:
         from core.belief import BeliefStore
-        self_beliefs = BeliefStore('self')
+
+        self_beliefs = BeliefStore("self")
         executor_warnings = [
-            b for b in self_beliefs.all()
-            if b.is_actionable and 'executor' in b.statement.lower()
+            b for b in self_beliefs.all() if b.is_actionable and "executor" in b.statement.lower()
         ]
         if executor_warnings:
-            lines += ['Known weaknesses (from self-analysis):']
+            lines += ["Known weaknesses (from self-analysis):"]
             for wb in executor_warnings[:3]:
-                lines.append(f'  WARNING: {wb.statement}')
-            lines.append('')
+                lines.append(f"  WARNING: {wb.statement}")
+            lines.append("")
     except Exception:
         pass
 
@@ -202,13 +230,13 @@ def _build_prompt(task: str, file_contexts: dict, history: list,
             "CRITICAL: The following files are config/orchestration types that MUST be edited with whole-file write:",
             *[f"  - {f}" for f in config_files],
             "Do NOT use str.replace() on any of these files. Read the whole file, apply changes in memory, write back.",
-            ""
+            "",
         ]
-
 
     # Inject skill file context from previous fixes
     try:
         from core.failure_analyzer import SkillStore
+
         skill_store = SkillStore()
         matching_skill = skill_store.find_matching_skill(task)
         if matching_skill:
@@ -217,7 +245,7 @@ def _build_prompt(task: str, file_contexts: dict, history: list,
                 "REFERENCE: A similar case was previously solved with this skill:",
                 f"--- {matching_skill['name']} ---",
                 matching_skill["content"][:500],  # First 500 chars of skill
-                ""
+                "",
             ]
     except Exception:
         pass  # Skill lookup is optional
@@ -241,6 +269,7 @@ def _build_prompt(task: str, file_contexts: dict, history: list,
 def _detect_changed_files(script: str, repo: Path) -> list[str]:
     """Heuristic: find file paths written to in the script."""
     import re
+
     paths = re.findall(r'["\']([^"\']+\.[a-z]{2,4})["\']', script)
     changed = []
     for p in paths:
@@ -253,6 +282,7 @@ def _detect_changed_files(script: str, repo: Path) -> list[str]:
 def _check_changed_files(files: list[str], repo: Path) -> list[str]:
     """Maker-checker: validate changed files for obvious errors."""
     import json as _json
+
     errors = []
     for filepath in files:
         path = Path(filepath)
@@ -272,8 +302,12 @@ def _check_changed_files(files: list[str], repo: Path) -> list[str]:
             errors.append(f"{filepath}: merge conflict markers present")
             continue
         if filepath.endswith(".py"):
-            r = _sp.run(["python3", "-m", "py_compile", filepath],
-                        capture_output=True, text=True, timeout=10)
+            r = _sp.run(
+                ["python3", "-m", "py_compile", filepath],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
             if r.returncode != 0:
                 errors.append(f"{filepath}: syntax error — {r.stderr.strip()[:300]}")
         elif filepath.endswith(".json"):
@@ -285,8 +319,7 @@ def _check_changed_files(files: list[str], repo: Path) -> list[str]:
             if "\t" in content:
                 errors.append(f"{filepath}: YAML contains tabs")
         elif filepath.endswith((".sh", ".bash", ".zsh")):
-            r = _sp.run(["bash", "-n", filepath],
-                        capture_output=True, text=True, timeout=10)
+            r = _sp.run(["bash", "-n", filepath], capture_output=True, text=True, timeout=10)
             if r.returncode != 0:
                 errors.append(f"{filepath}: shell syntax error — {r.stderr.strip()[:300]}")
     return errors

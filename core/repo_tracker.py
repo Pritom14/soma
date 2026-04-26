@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 core/repo_tracker.py - Track repos SOMA watches and score new issues against its beliefs.
 
@@ -10,7 +11,6 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
 
 from config import DB_PATH
 from core import github
@@ -23,9 +23,9 @@ class ScoredIssue:
     title: str
     body: str
     url: str
-    score: float            # 0.0 to 1.0 — higher is better candidate
-    confidence: float       # avg relevant belief confidence
-    reason: str             # why SOMA thinks it can handle this
+    score: float  # 0.0 to 1.0 — higher is better candidate
+    confidence: float  # avg relevant belief confidence
+    reason: str  # why SOMA thinks it can handle this
 
 
 class RepoTracker:
@@ -104,19 +104,19 @@ class RepoTracker:
             new_issues = [i for i in issues if i.number not in seen]
 
             for issue in new_issues[:limit_per_repo]:
-                score, confidence, reason = self._score_issue(
-                    issue, belief_store, exp_store
+                score, confidence, reason = self._score_issue(issue, belief_store, exp_store)
+                candidates.append(
+                    ScoredIssue(
+                        repo=repo,
+                        number=issue.number,
+                        title=issue.title,
+                        body=issue.body[:300],
+                        url=issue.url,
+                        score=score,
+                        confidence=confidence,
+                        reason=reason,
+                    )
                 )
-                candidates.append(ScoredIssue(
-                    repo=repo,
-                    number=issue.number,
-                    title=issue.title,
-                    body=issue.body[:300],
-                    url=issue.url,
-                    score=score,
-                    confidence=confidence,
-                    reason=reason,
-                ))
 
             # Mark all fetched issues as seen so we don't re-score them
             self.mark_seen(repo, [i.number for i in issues])
@@ -134,10 +134,7 @@ class RepoTracker:
 
         # Check past experience with similar tasks
         similar = exp_store.find_similar(context, "oss_contribution", limit=3)
-        past_success = (
-            sum(1 for e in similar if e.success) / len(similar)
-            if similar else 0.5
-        )
+        past_success = sum(1 for e in similar if e.success) / len(similar) if similar else 0.5
 
         # Penalise issues that look too vague or too large
         body_len = len(issue.body or "")

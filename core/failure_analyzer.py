@@ -3,6 +3,7 @@ from __future__ import annotations
 from enum import Enum
 from pathlib import Path
 
+
 class FailureType(Enum):
     FIND_STRING_MISMATCH = "find_string_mismatch"
     SYNTAX_ERROR = "syntax_error"
@@ -12,7 +13,9 @@ class FailureType(Enum):
     SEQUENCING_DEADLOCK = "sequencing_deadlock"
     UNKNOWN = "unknown"
 
+
 from dataclasses import dataclass
+
 
 @dataclass
 class FailureDiagnosis:
@@ -30,28 +33,54 @@ def classify_failure(script: str, error_output: str, task: str) -> FailureDiagno
     err = error_output.lower()
 
     # Check if this is a config/shell file edit failure
-    config_extensions = ('.sh', '.env', '.toml', 'Dockerfile', '.conf', '.cfg', '.ini')
+    config_extensions = (".sh", ".env", ".toml", "Dockerfile", ".conf", ".cfg", ".ini")
     script_has_config = any(ext in script for ext in config_extensions)
 
-    if "find string not" in err or "not in content" in err or "could not find" in err or "valueerror" in err and "not found" in err:
+    if (
+        "find string not" in err
+        or "not in content" in err
+        or "could not find" in err
+        or "valueerror" in err
+        and "not found" in err
+    ):
         hint = "Read the file content first and copy the find string verbatim — do not paraphrase or reconstruct from memory."
         if script_has_config:
             hint = "This is a config/shell file — do NOT use str.replace(). Read the whole file, make changes in memory, and write the entire content back with Path.write_text()."
         return FailureDiagnosis(FailureType.FIND_STRING_MISMATCH, error_output[:200], hint)
 
     if "syntaxerror" in err or "unexpected" in err and "line" in err:
-        return FailureDiagnosis(FailureType.SYNTAX_ERROR, error_output[:200], "Check the generated script for unmatched quotes, brackets, or indentation errors.")
+        return FailureDiagnosis(
+            FailureType.SYNTAX_ERROR,
+            error_output[:200],
+            "Check the generated script for unmatched quotes, brackets, or indentation errors.",
+        )
 
     if "nameerror" in err or "importerror" in err or "modulenotfounderror" in err:
-        return FailureDiagnosis(FailureType.IMPORT_MISSING, error_output[:200], "Add the missing import at the top of the script before using the name.")
+        return FailureDiagnosis(
+            FailureType.IMPORT_MISSING,
+            error_output[:200],
+            "Add the missing import at the top of the script before using the name.",
+        )
 
     if "filenotfounderror" in err or "no such file" in err:
-        return FailureDiagnosis(FailureType.FILE_NOT_FOUND, error_output[:200], "Verify the file path exists. Use Path(filepath).exists() before reading.")
+        return FailureDiagnosis(
+            FailureType.FILE_NOT_FOUND,
+            error_output[:200],
+            "Verify the file path exists. Use Path(filepath).exists() before reading.",
+        )
 
     if "already defined" in err or "duplicate" in err or "typeerror" in err and "argument" in err:
-        return FailureDiagnosis(FailureType.SEQUENCING_DEADLOCK, error_output[:200], "Define the function or class before adding calls to it. Check for duplicate definitions.")
+        return FailureDiagnosis(
+            FailureType.SEQUENCING_DEADLOCK,
+            error_output[:200],
+            "Define the function or class before adding calls to it. Check for duplicate definitions.",
+        )
 
-    return FailureDiagnosis(FailureType.UNKNOWN, error_output[:200], "Review the full error output and try a more targeted single-operation approach.")
+    return FailureDiagnosis(
+        FailureType.UNKNOWN,
+        error_output[:200],
+        "Review the full error output and try a more targeted single-operation approach.",
+    )
 
 
 def get_recovery_context(script: str, error_output: str, task: str) -> str:
@@ -61,13 +90,13 @@ def get_recovery_context(script: str, error_output: str, task: str) -> str:
     return f"Error:\n{error_tail}\nDiagnosis ({diagnosis.failure_type.value}): {diagnosis.recovery_hint}"
 
 
-
 class SkillStore:
     """Manage skill files that codify repeated fixes."""
 
     def __init__(self, skills_dir: str | Path = None):
         if skills_dir is None:
             from config import BASE_DIR
+
             skills_dir = BASE_DIR / "skills"
         self.skills_dir = Path(skills_dir)
         self.skills_dir.mkdir(exist_ok=True)
@@ -78,11 +107,13 @@ class SkillStore:
         for skill_file in self.skills_dir.glob("*.md"):
             try:
                 content = skill_file.read_text()
-                skills.append({
-                    "path": str(skill_file),
-                    "name": skill_file.stem,
-                    "content": content,
-                })
+                skills.append(
+                    {
+                        "path": str(skill_file),
+                        "name": skill_file.stem,
+                        "content": content,
+                    }
+                )
             except Exception:
                 pass
         return skills
@@ -90,6 +121,7 @@ class SkillStore:
     def find_matching_skill(self, task: str) -> dict | None:
         """Fuzzy match task description against skill files. Return best match."""
         import difflib
+
         task_lower = task.lower()
         best_match = None
         best_ratio = 0

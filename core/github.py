@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 core/github.py - GitHub operations via gh CLI + git.
 No PyGithub - uses existing auth, zero extra deps.
@@ -33,15 +34,22 @@ def check_gh_auth() -> bool:
     return result.success
 
 
-def list_issues(repo: str, state: str = "open", limit: int = 20,
-                labels: list[str] = None) -> list[Issue]:
+def list_issues(
+    repo: str, state: str = "open", limit: int = 20, labels: list[str] = None
+) -> list[Issue]:
     """List issues from a repo."""
     cmd = [
-        "gh", "issue", "list",
-        "--repo", repo,
-        "--state", state,
-        "--limit", str(limit),
-        "--json", "number,title,body,labels,url",
+        "gh",
+        "issue",
+        "list",
+        "--repo",
+        repo,
+        "--state",
+        state,
+        "--limit",
+        str(limit),
+        "--json",
+        "number,title,body,labels,url",
     ]
     if labels:
         cmd += ["--label", ",".join(labels)]
@@ -68,8 +76,16 @@ def list_issues(repo: str, state: str = "open", limit: int = 20,
 
 def get_issue(repo: str, number: int) -> Optional[Issue]:
     result = run(
-        ["gh", "issue", "view", str(number), "--repo", repo,
-         "--json", "number,title,body,labels,url"],
+        [
+            "gh",
+            "issue",
+            "view",
+            str(number),
+            "--repo",
+            repo,
+            "--json",
+            "number,title,body,labels,url",
+        ],
         timeout=15,
     )
     if not result.success:
@@ -101,6 +117,7 @@ def create_branch(name: str, cwd: str | Path) -> RunResult:
 def _sanitize_comment(text: str) -> str:
     """Remove lone dashes and double-dashes used as separators (house style)."""
     import re
+
     # Remove ' — ' and ' - ' when used as separators (surrounded by spaces)
     text = re.sub(r"\s+--+\s+", " ", text)
     text = re.sub(r"\s+-\s+", " ", text)
@@ -126,15 +143,23 @@ def commit_and_push(branch: str, message: str, cwd: str | Path) -> RunResult:
     return run(["git", "push", "origin", branch], cwd=cwd, timeout=30)
 
 
-def create_pr(repo: str, title: str, body: str, branch: str,
-              base: str = "main") -> PRResult:
+def create_pr(repo: str, title: str, body: str, branch: str, base: str = "main") -> PRResult:
     result = run(
-        ["gh", "pr", "create",
-         "--repo", repo,
-         "--title", title,
-         "--body", body,
-         "--base", base,
-         "--head", branch],
+        [
+            "gh",
+            "pr",
+            "create",
+            "--repo",
+            repo,
+            "--title",
+            title,
+            "--body",
+            body,
+            "--base",
+            base,
+            "--head",
+            branch,
+        ],
         timeout=30,
     )
     if result.success:
@@ -145,8 +170,16 @@ def create_pr(repo: str, title: str, body: str, branch: str,
 
 def get_pr_checks(repo: str, pr_number: int) -> dict:
     result = run(
-        ["gh", "pr", "checks", str(pr_number), "--repo", repo, "--json",
-         "name,state,conclusion"],
+        [
+            "gh",
+            "pr",
+            "checks",
+            str(pr_number),
+            "--repo",
+            repo,
+            "--json",
+            "name,state,conclusion",
+        ],
         timeout=20,
     )
     if not result.success:
@@ -160,8 +193,16 @@ def get_pr_checks(repo: str, pr_number: int) -> dict:
 def get_pr_status(repo: str, branch: str) -> dict:
     """Check if a SOMA-authored PR branch is merged, open, or closed."""
     result = run(
-        ["gh", "pr", "view", branch, "--repo", repo,
-         "--json", "number,state,merged,mergedAt,title"],
+        [
+            "gh",
+            "pr",
+            "view",
+            branch,
+            "--repo",
+            repo,
+            "--json",
+            "number,state,merged,mergedAt,title",
+        ],
         timeout=15,
     )
     if not result.success:
@@ -188,8 +229,16 @@ def get_pr_status(repo: str, branch: str) -> dict:
 def get_pr_state(repo: str, pr_number: int) -> dict:
     """Return current state of a PR by number."""
     result = run(
-        ["gh", "pr", "view", str(pr_number), "--repo", repo,
-         "--json", "number,state,merged,mergedAt,title"],
+        [
+            "gh",
+            "pr",
+            "view",
+            str(pr_number),
+            "--repo",
+            repo,
+            "--json",
+            "number,state,merged,mergedAt,title",
+        ],
         timeout=15,
     )
     if not result.success:
@@ -212,47 +261,48 @@ def get_pr_all_comments(repo: str, pr_number: int) -> list[dict]:
 
     # Issue-level comments (general conversation)
     result = run(
-        ["gh", "api", f"repos/{repo}/issues/{pr_number}/comments",
-         "--paginate"],
+        ["gh", "api", f"repos/{repo}/issues/{pr_number}/comments", "--paginate"],
         timeout=20,
     )
     if result.success:
         try:
             for c in json.loads(result.stdout):
-                comments.append({
-                    "id": str(c["id"]),
-                    "author": c["user"]["login"],
-                    "body": c.get("body", ""),
-                    "type": "issue",
-                    "created_at": c.get("created_at", ""),
-                })
+                comments.append(
+                    {
+                        "id": str(c["id"]),
+                        "author": c["user"]["login"],
+                        "body": c.get("body", ""),
+                        "type": "issue",
+                        "created_at": c.get("created_at", ""),
+                    }
+                )
         except (json.JSONDecodeError, KeyError):
             pass
 
     # Inline review comments
     result = run(
-        ["gh", "api", f"repos/{repo}/pulls/{pr_number}/comments",
-         "--paginate"],
+        ["gh", "api", f"repos/{repo}/pulls/{pr_number}/comments", "--paginate"],
         timeout=20,
     )
     if result.success:
         try:
             for c in json.loads(result.stdout):
-                comments.append({
-                    "id": str(c["id"]),
-                    "author": c["user"]["login"],
-                    "body": c.get("body", ""),
-                    "type": "review_inline",
-                    "path": c.get("path", ""),
-                    "created_at": c.get("created_at", ""),
-                })
+                comments.append(
+                    {
+                        "id": str(c["id"]),
+                        "author": c["user"]["login"],
+                        "body": c.get("body", ""),
+                        "type": "review_inline",
+                        "path": c.get("path", ""),
+                        "created_at": c.get("created_at", ""),
+                    }
+                )
         except (json.JSONDecodeError, KeyError):
             pass
 
     # Review-level comments (approve/request-changes message)
     result = run(
-        ["gh", "api", f"repos/{repo}/pulls/{pr_number}/reviews",
-         "--paginate"],
+        ["gh", "api", f"repos/{repo}/pulls/{pr_number}/reviews", "--paginate"],
         timeout=20,
     )
     if result.success:
@@ -261,14 +311,16 @@ def get_pr_all_comments(repo: str, pr_number: int) -> list[dict]:
                 body = r.get("body", "").strip()
                 if not body:
                     continue
-                comments.append({
-                    "id": f"review_{r['id']}",
-                    "author": r["user"]["login"],
-                    "body": body,
-                    "type": "review",
-                    "state": r.get("state", ""),
-                    "created_at": r.get("submitted_at", ""),
-                })
+                comments.append(
+                    {
+                        "id": f"review_{r['id']}",
+                        "author": r["user"]["login"],
+                        "body": body,
+                        "type": "review",
+                        "state": r.get("state", ""),
+                        "created_at": r.get("submitted_at", ""),
+                    }
+                )
         except (json.JSONDecodeError, KeyError):
             pass
 

@@ -1,14 +1,20 @@
 from __future__ import annotations
 import json
 from datetime import datetime
-from pathlib import Path
-from config import BASE_DIR, BELIEFS_DIR
+from config import BELIEFS_DIR
 
 SOUL_DIR = BELIEFS_DIR / "self"
 
 
 class IdentityStore:
-    SOUL_FIELDS = ["purpose", "values", "style", "capabilities", "limitations", "non_negotiables"]
+    SOUL_FIELDS = [
+        "purpose",
+        "values",
+        "style",
+        "capabilities",
+        "limitations",
+        "non_negotiables",
+    ]
 
     DEFAULT_SOUL = {
         "purpose": "I am SOMA. I contribute to open-source projects, solve coding tasks, and learn from every interaction across all domains.",
@@ -85,6 +91,7 @@ class IdentityStore:
         # Log to brain timeline
         try:
             from core.brain import BrainStore
+
             brain = BrainStore()
             brain.add_timeline(
                 slug="soma-identity",
