@@ -1,0 +1,15 @@
+# MLX-LM LoRA configuration for SOMA fine-tune
+model: mlx-community/Mistral-7B-Instruct-v0.2-4bit
+train: true
+data: data
+adapter_path: models/soma-lora
+fine_tune_type: lora
+num_layers: 8
+iters: 150
+batch_size: 1
+learning_rate: 5e-5
+steps_per_eval: 50
+val_batches: 5
+save_every: 50
+grad_checkpoint: true
+max_seq_length: 512
