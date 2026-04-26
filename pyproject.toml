@@ -1,0 +1,28 @@
+[project]
+name = 'soma'
+version = '0.1.0'
+description = 'A self-improving autonomous developer agent'
+license = { text = 'MIT' }
+requires-python = '>=3.11'
+dependencies = [
+    'ollama>=0.4.0',
+    'anthropic>=0.40.0',
+    'pydantic>=2.0',
+    'networkx>=3.0',
+    'graphify>=0.1.0',
+    'mlx-lm>=0.20.0',
+    'transformers>=4.47.0',
+    'jinja2>=3.1.0',
+    'dataclasses-json>=0.6.0',
+    'rich>=13.0.0'
+]
+
+[project.optional-dependencies]
+dev = [
+    'pytest>=8.0',
+    'ruff>=0.4.0'
+]
+
+[build-system]
+requires = ['setuptools>=65.0', 'wheel']
+build-backend = 'setuptools.build_meta'

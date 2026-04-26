@@ -2,15 +2,35 @@ from __future__ import annotations
 """
 core/executor.py - CodeAct execution pattern.
 Agent writes a Python edit script → run it → observe outcome → self-correct.
-Max 3 iterations before surfacing to user.
+Max 5 iterations before surfacing to user.
 """
 from dataclasses import dataclass, field
 from pathlib import Path
+import subprocess as _sp
 
 from core.tools import run_python, read_file, RunResult
 from core.llm import LLMClient
+from core.tool_registry import ToolRegistry
+from core.snapshot import take_snapshot, restore_snapshot
+from core.failure_analyzer import classify_failure
 
-MAX_ITERATIONS = 3
+MAX_ITERATIONS = 5
+
+# Config/orchestration file extensions that should use whole-file write
+WHOLE_FILE_EXTENSIONS = {
+    '.sh', '.bash', '.zsh', '.env', '.ini', '.cfg', '.toml',
+    '.conf', '.config', '.properties', 'Dockerfile',
+}
+
+
+def _has_config_files(file_contexts: dict) -> list[str]:
+    """Detect config/orchestration files that should use whole-file write."""
+    config_files = []
+    for fp in file_contexts:
+        p = Path(fp)
+        if p.suffix in WHOLE_FILE_EXTENSIONS or p.name in WHOLE_FILE_EXTENSIONS:
+            config_files.append(fp)
+    return config_files
 
 
 @dataclass
@@ -30,6 +50,7 @@ def execute_edit(
     llm: LLMClient,
     model: str,
     beliefs_context: str = "",
+    tool_registry: ToolRegistry = None,
 ) -> EditResult:
     """
     CodeAct loop: generate edit script → run → if fails, self-correct.
@@ -38,19 +59,68 @@ def execute_edit(
     """
     repo = Path(repo_path)
     history = []  # (script, result) pairs for self-correction context
+    tools_ctx = tool_registry.to_prompt_context() if tool_registry else ""
+    snapshot = take_snapshot(list(file_contexts.keys()))
 
     for iteration in range(1, MAX_ITERATIONS + 1):
-        prompt = _build_prompt(task, file_contexts, history, beliefs_context, repo)
+        prompt = _build_prompt(task, file_contexts, history, beliefs_context, repo, tools_ctx)
         script = llm.ask(model, prompt, system=_SYSTEM)
 
         # Strip markdown fences if model wraps in ```python
         script = _clean_script(script)
 
+        pre_run_files = set(file_contexts.keys())
         result = run_python(script, cwd=repo, timeout=30)
         history.append((script, result))
 
         if result.success:
+            # Enforce SUCCESS marker — silent failures must be caught
+            if "SUCCESS" not in result.stdout:
+                history.append((script, RunResult(
+                    returncode=1,
+                    stdout=result.stdout,
+                    stderr="[executor] No SUCCESS marker — edit may not have applied"
+                )))
+                continue
+
             changed = _detect_changed_files(script, repo)
+
+            check_errors = _check_changed_files(changed, repo)
+            if check_errors:
+                restore_snapshot(snapshot)
+                for _f in changed:
+                    if _f not in pre_run_files and Path(_f).exists():
+                        Path(_f).unlink()
+                if iteration == MAX_ITERATIONS:
+                    return EditResult(
+                        success=False,
+                        iterations=iteration,
+                        final_script=script,
+                        output=result.output,
+                        error="Maker-checker failed on final iteration:\n" + "\n".join(check_errors),
+                    )
+                history[-1] = (script, RunResult(
+                    returncode=1,
+                    stdout=result.stdout,
+                    stderr="Maker-checker validation failed:\n" + "\n".join(check_errors)
+                ))
+                continue
+
+            # Run tests if available
+            if tool_registry and iteration < MAX_ITERATIONS:
+                test_tool = tool_registry.get("test")
+                if test_tool:
+                    test_result = test_tool.run(cwd=repo)
+                    if not test_result.success:
+                        restore_snapshot(snapshot)
+                        history[-1] = (script, RunResult(
+                            success=False,
+                            output=test_result.output,
+                            stderr=f"Tests failed:\n{test_result.output}",
+                            returncode=1
+                        ))
+                        continue
+
             return EditResult(
                 success=True,
                 iterations=iteration,
@@ -64,6 +134,7 @@ def execute_edit(
 
         # Self-correction: loop continues with error context
 
+    restore_snapshot(snapshot)
     return EditResult(
         success=False,
         iterations=MAX_ITERATIONS,
@@ -74,11 +145,14 @@ def execute_edit(
 
 
 def _build_prompt(task: str, file_contexts: dict, history: list,
-                  beliefs: str, repo: Path) -> str:
+                  beliefs: str, repo: Path, tools_ctx: str = "") -> str:
     lines = [f"Task: {task}", ""]
 
     if beliefs:
         lines += ["Relevant beliefs from memory:", beliefs, ""]
+
+    if tools_ctx:
+        lines += ["Available tools:", tools_ctx, ""]
 
     lines += [
         f"Repo root: {repo}",
@@ -88,6 +162,66 @@ def _build_prompt(task: str, file_contexts: dict, history: list,
     for filepath, content in list(file_contexts.items())[:4]:  # cap context
         lines += [f"\n--- {filepath} ---", content[:1500], ""]
 
+    lines += [
+        "",
+        "Write a Python script that makes the required edit.",
+        "CRITICAL RULES:",
+        "- For NEW files: use Path(filepath).write_text(content).",
+        "- For EXISTING files: read with Path(filepath).read_text(), apply str.replace(), write back.",
+        "- MODIFY existing functions/classes in place. NEVER add duplicate definitions.",
+        "- Do not append new functions if one with the same name already exists.",
+        "- Use pathlib.Path for file operations. Do not import non-stdlib modules.",
+        "- Print 'SUCCESS' at the end if the edit was applied correctly.",
+        "- IDEMPOTENCY: For each str.replace(old, new), check if old is present. If old is NOT found but new IS already present, that step is done — skip silently and continue to the NEXT replacement. If old is NOT found and new is NOT present either, raise AssertionError so the executor can retry. Only print SUCCESS after ALL replacements are processed (either applied or skipped). Never exit early.",
+        "- NEVER apply the same replacement twice in one script.",
+        "- For config/orchestration files (.env, .ini, .cfg, .sh, .bash, .zsh, Dockerfile, .toml, .conf, .config, .properties): ALWAYS use Path(filepath).read_text() then Path(filepath).write_text(new_content) to write the whole file. NEVER use str.replace() on these file types. Make changes mentally while reading, then write the complete corrected content in one write_text() call.",
+        "- NEVER define a function or class if one with that exact name already exists in the file.",
+        "Only output the Python script - no explanation.",
+    ]
+
+    # Inject harness meta-beliefs as executor warnings
+    try:
+        from core.belief import BeliefStore
+        self_beliefs = BeliefStore('self')
+        executor_warnings = [
+            b for b in self_beliefs.all()
+            if b.is_actionable and 'executor' in b.statement.lower()
+        ]
+        if executor_warnings:
+            lines += ['Known weaknesses (from self-analysis):']
+            for wb in executor_warnings[:3]:
+                lines.append(f'  WARNING: {wb.statement}')
+            lines.append('')
+    except Exception:
+        pass
+
+    # Detect config/orchestration files and inject CRITICAL warning
+    config_files = _has_config_files(file_contexts)
+    if config_files:
+        lines += [
+            "CRITICAL: The following files are config/orchestration types that MUST be edited with whole-file write:",
+            *[f"  - {f}" for f in config_files],
+            "Do NOT use str.replace() on any of these files. Read the whole file, apply changes in memory, write back.",
+            ""
+        ]
+
+
+    # Inject skill file context from previous fixes
+    try:
+        from core.failure_analyzer import SkillStore
+        skill_store = SkillStore()
+        matching_skill = skill_store.find_matching_skill(task)
+        if matching_skill:
+            lines += [
+                "",
+                "REFERENCE: A similar case was previously solved with this skill:",
+                f"--- {matching_skill['name']} ---",
+                matching_skill["content"][:500],  # First 500 chars of skill
+                ""
+            ]
+    except Exception:
+        pass  # Skill lookup is optional
+
     if history:
         last_script, last_result = history[-1]
         lines += [
@@ -96,22 +230,10 @@ def _build_prompt(task: str, file_contexts: dict, history: list,
             last_script,
             "```",
             f"Error output:\n{last_result.tail(20)}",
+            f"Failure diagnosis: {classify_failure(last_script, last_result.stderr if hasattr(last_result, 'stderr') else '', task).recovery_hint}",
             "",
             "Fix the script based on the error above.",
         ]
-
-    lines += [
-        "",
-        "Write a Python script that makes the required edit.",
-        "CRITICAL RULES:",
-        "- MODIFY existing functions/classes in place. NEVER add duplicate definitions.",
-        "- Use str.replace() to swap old code for new code within the file content.",
-        "- Read the full file, apply ONE targeted replacement, write back.",
-        "- Do not append new functions if one with the same name already exists.",
-        "- Use pathlib.Path for file operations. Do not import non-stdlib modules.",
-        "- Print 'SUCCESS' at the end if the edit was applied correctly.",
-        "Only output the Python script - no explanation.",
-    ]
 
     return "\n".join(lines)
 
@@ -126,6 +248,48 @@ def _detect_changed_files(script: str, repo: Path) -> list[str]:
         if full.exists():
             changed.append(str(full))
     return list(set(changed))
+
+
+def _check_changed_files(files: list[str], repo: Path) -> list[str]:
+    """Maker-checker: validate changed files for obvious errors."""
+    import json as _json
+    errors = []
+    for filepath in files:
+        path = Path(filepath)
+        if not path.exists():
+            errors.append(f"{filepath}: file missing after edit")
+            continue
+        try:
+            content = path.read_text(encoding="utf-8")
+        except Exception as e:
+            errors.append(f"{filepath}: unreadable after edit: {e}")
+            continue
+        if not content.strip():
+            errors.append(f"{filepath}: file is empty after edit")
+            continue
+        lines_set = set(content.splitlines())
+        if any(l.startswith("<<<<<<<") or l.startswith(">>>>>>>") for l in lines_set):
+            errors.append(f"{filepath}: merge conflict markers present")
+            continue
+        if filepath.endswith(".py"):
+            r = _sp.run(["python3", "-m", "py_compile", filepath],
+                        capture_output=True, text=True, timeout=10)
+            if r.returncode != 0:
+                errors.append(f"{filepath}: syntax error — {r.stderr.strip()[:300]}")
+        elif filepath.endswith(".json"):
+            try:
+                _json.loads(content)
+            except Exception as e:
+                errors.append(f"{filepath}: invalid JSON — {e}")
+        elif filepath.endswith((".yaml", ".yml")):
+            if "\t" in content:
+                errors.append(f"{filepath}: YAML contains tabs")
+        elif filepath.endswith((".sh", ".bash", ".zsh")):
+            r = _sp.run(["bash", "-n", filepath],
+                        capture_output=True, text=True, timeout=10)
+            if r.returncode != 0:
+                errors.append(f"{filepath}: shell syntax error — {r.stderr.strip()[:300]}")
+    return errors
 
 
 def _clean_script(raw: str) -> str:
