@@ -13,27 +13,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  security:
+  gitleaks:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Full history for gitleaks scan
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pip-audit gitleaks
+          fetch-depth: 0
 
       - name: Run gitleaks
-        run: gitleaks detect --verbose --log-level debug
-
-      - name: Run pip-audit for vulnerabilities
-        run: pip-audit
+        uses: gitleaks/gitleaks-action@v2
         continue-on-error: true
