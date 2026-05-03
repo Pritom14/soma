@@ -15,13 +15,11 @@ from core.goals import GoalStore, GATE_ACT, GATE_GATHER
 from core.pr_monitor import PRMonitor, PRRegistry
 from core.repo_tracker import RepoTracker
 from core.tasks import TaskQueue
-from comms.protocol.inbox_reader import InboxReader
-from comms.protocol.outbox_writer import OutboxWriter
-from comms.protocol.decision_gate import DecisionGate
-from comms.protocol.session_memory import SessionMemory
-from comms.protocol.notifier import Notifier
-from comms.protocol.message import make_soma_response, make_soma_update
 from agents.base import BaseAgent
+
+# Stubs for communication layer (from orchestrator.py)
+def make_soma_response(*args, **kwargs): return {}
+def make_soma_update(*args, **kwargs): return {}
 
 
 class SchedulerAgent(BaseAgent):

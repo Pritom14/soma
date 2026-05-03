@@ -1,8 +1,239 @@
 # core/failure_analyzer.py - classify CodeAct iteration failures for targeted recovery
 from __future__ import annotations
+import re
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from core.experience import FailureClass
+
+
+# ---------------------------------------------------------------------------
+# New structured interface: FailureAnalysis + FailureAnalyzer
+# ---------------------------------------------------------------------------
+
+@dataclass
+class FailureAnalysis:
+    """Structured result of classifying a single failed CodeAct iteration."""
+
+    failure_class: str          # one of FailureClass constants
+    confidence: float           # 0.0–1.0, how confident we are in the classification
+    root_cause: str             # 1-sentence human-readable diagnosis
+    recovery_instruction: str   # injected into the next CodeAct prompt iteration
+    context: dict = field(default_factory=dict)  # structured data for logging
+
+
+# Recovery instructions keyed by FailureClass constant
+_RECOVERY_INSTRUCTIONS: dict[str, str] = {
+    FailureClass.LOCALIZATION_MISS: (
+        "The find_string was not found. Read the file first with the Read tool, "
+        "copy the exact text including whitespace, then retry the replacement."
+    ),
+    FailureClass.EDIT_SYNTAX_ERROR: (
+        "Your edit script has a syntax error. Check indentation and quote matching. "
+        "Use triple-quoted strings for multiline content."
+    ),
+    FailureClass.VERIFY_BUILD_FAIL: (
+        "The build or typecheck failed after your edit. Review the TypeScript/build "
+        "errors carefully and fix the type annotations or import paths accordingly."
+    ),
+    FailureClass.VERIFY_TEST_FAIL: (
+        "Tests failed after your edit. Read the failing test output, identify which "
+        "assertion broke, and adjust the implementation to satisfy the test."
+    ),
+    FailureClass.CI_FAIL: (
+        "CI checks failed. Review the workflow log for the specific step that failed "
+        "and address the lint, type, or test error it reports."
+    ),
+    FailureClass.LLM_HALLUCINATION: (
+        "The method/attribute you referenced does not exist. Read the file to confirm "
+        "the actual method names and signatures before editing."
+    ),
+    FailureClass.PUSH_FAIL: (
+        "The git push was rejected. Pull the latest changes, resolve any conflicts, "
+        "then retry. Ensure you have write permissions to the branch."
+    ),
+    FailureClass.NONE: (
+        "No specific failure pattern was identified. Review the full error output "
+        "and try a more targeted single-operation approach."
+    ),
+}
+
+# Ordered classification rules: (failure_class, confidence, patterns_any_of, root_cause_template)
+# ORDER MATTERS — first match wins. More specific / less ambiguous rules come first.
+_RULES: list[tuple[str, float, list[str], str]] = [
+    # 1. Syntax errors — very distinctive tokens, no cross-class ambiguity
+    (
+        FailureClass.EDIT_SYNTAX_ERROR,
+        0.90,
+        ["syntaxerror", "indentationerror", "unexpected token", "unexpected indent",
+         "unexpected eof", "invalid syntax"],
+        "The generated edit script contains a Python syntax or indentation error.",
+    ),
+    # 2. Build/typecheck — TypeScript-specific tokens before generic "failed"
+    (
+        FailureClass.VERIFY_BUILD_FAIL,
+        0.88,
+        ["typescript error", "tsc:", "build failed", "typecheck", "type error",
+         "compilation error", "cannot find module"],
+        "Build or typecheck failed after the edit was applied.",
+    ),
+    # 3. LLM hallucination — AttributeError/NameError are specific to runtime
+    #    attribute access on objects that don't have a method; comes before test/CI
+    (
+        FailureClass.LLM_HALLUCINATION,
+        0.87,
+        ["attributeerror", "nameerror", "importerror", "has no attribute",
+         "modulenotfounderror", "is not defined"],
+        "The model referenced a method, name, or module that does not exist.",
+    ),
+    # 4. Push failures — very specific git vocabulary
+    (
+        FailureClass.PUSH_FAIL,
+        0.90,
+        ["rejected", "permission denied", "push failed",
+         "non-fast-forward", "remote rejected"],
+        "The git push was rejected due to conflicts or permission issues.",
+    ),
+    # 5. CI failures — workflow-specific vocabulary
+    (
+        FailureClass.CI_FAIL,
+        0.85,
+        ["github actions", "workflow", "checks failed", "action failed",
+         "pipeline failed", "ci pipeline"],
+        "CI workflow checks failed on the pull request.",
+    ),
+    # 6. Test failures — require pytest-specific signals or test_ prefix context
+    (
+        FailureClass.VERIFY_TEST_FAIL,
+        0.88,
+        ["pytest", "test_", "1 failed", "tests failed", "assertion failed",
+         "assert response", "assert result", "error in test"],
+        "Tests failed after the edit was applied.",
+    ),
+    # 7. Localization miss — find_string / replacement string absent in file
+    #    Uses only localization-specific vocabulary (no generic "failed"/"error")
+    (
+        FailureClass.LOCALIZATION_MISS,
+        0.92,
+        ["find_string not in file", "no match for", "not in content",
+         "not in file content", "string not found in file", "could not find",
+         "old string not found"],
+        "The edit find-string was not present in the target file.",
+    ),
+]
+
+
+def _is_localization_error(error_output: str) -> bool:
+    """Secondary check: 'not found' alone is ambiguous; require file-edit context."""
+    err = error_output.lower()
+    # "not found" is valid for localization only when combined with file/content vocabulary
+    localization_context = ("file", "content", "replace", "str.replace", "find_string", "edit")
+    if "not found" in err:
+        return any(ctx in err for ctx in localization_context)
+    return False
+
+
+class FailureAnalyzer:
+    """Pattern-based classifier for CodeAct iteration failures.
+
+    No LLM required — all classification is regex/substring matching.
+    """
+
+    def analyze(
+        self,
+        error_output: str,
+        edit_script: str = "",
+        file_content: str = "",
+    ) -> FailureAnalysis:
+        """Classify a failed iteration and return structured recovery data."""
+        if not error_output and not edit_script:
+            return FailureAnalysis(
+                failure_class=FailureClass.NONE,
+                confidence=0.0,
+                root_cause="No error output provided.",
+                recovery_instruction=_RECOVERY_INSTRUCTIONS[FailureClass.NONE],
+                context={},
+            )
+
+        combined = (error_output + "\n" + edit_script).lower()
+
+        for failure_class, base_confidence, patterns, root_cause in _RULES:
+            matched_patterns = [p for p in patterns if p in combined]
+            if not matched_patterns:
+                continue
+
+            # Confidence scales with how many patterns match, capped at base
+            confidence = min(base_confidence + 0.02 * (len(matched_patterns) - 1), 0.99)
+
+            # Extract a short relevant snippet from the error for context
+            snippet = self._extract_snippet(error_output)
+
+            return FailureAnalysis(
+                failure_class=failure_class,
+                confidence=round(confidence, 3),
+                root_cause=root_cause,
+                recovery_instruction=_RECOVERY_INSTRUCTIONS[failure_class],
+                context={
+                    "matched_patterns": matched_patterns,
+                    "snippet": snippet,
+                    "error_length": len(error_output),
+                },
+            )
+
+        # Secondary check: "not found" with file-edit context → LOCALIZATION_MISS
+        if _is_localization_error(error_output):
+            snippet = self._extract_snippet(error_output)
+            return FailureAnalysis(
+                failure_class=FailureClass.LOCALIZATION_MISS,
+                confidence=0.75,
+                root_cause="The edit find-string was not present in the target file.",
+                recovery_instruction=_RECOVERY_INSTRUCTIONS[FailureClass.LOCALIZATION_MISS],
+                context={"matched_patterns": ["not found"], "snippet": snippet,
+                         "error_length": len(error_output)},
+            )
+
+        return FailureAnalysis(
+            failure_class=FailureClass.NONE,
+            confidence=0.1,
+            root_cause="Could not classify failure from error output.",
+            recovery_instruction=_RECOVERY_INSTRUCTIONS[FailureClass.NONE],
+            context={"error_length": len(error_output)},
+        )
+
+    def recovery_prompt(self, analysis: FailureAnalysis) -> str:
+        """Return a formatted string to prepend to the next CodeAct prompt iteration."""
+        lines = [
+            f"[FAILURE RECOVERY — {analysis.failure_class}]",
+            f"Root cause: {analysis.root_cause}",
+            f"Action required: {analysis.recovery_instruction}",
+        ]
+        if analysis.context.get("snippet"):
+            lines.append(f"Relevant error snippet: {analysis.context['snippet']}")
+        lines.append("")  # trailing blank line before task prompt
+        return "\n".join(lines)
+
+    @staticmethod
+    def _extract_snippet(error_output: str, max_len: int = 200) -> str:
+        """Extract the most informative line(s) from raw error output."""
+        if not error_output:
+            return ""
+        # Prefer lines with "Error", "assert", "FAILED", "not found"
+        priority_keywords = ("error", "assert", "failed", "not found", "traceback")
+        lines = error_output.splitlines()
+        for line in reversed(lines):  # last occurrence is usually most specific
+            if any(kw in line.lower() for kw in priority_keywords):
+                return line.strip()[:max_len]
+        # Fallback: last non-empty line
+        for line in reversed(lines):
+            if line.strip():
+                return line.strip()[:max_len]
+        return error_output[:max_len]
+
+
+# ---------------------------------------------------------------------------
+# Legacy interface (kept for executor.py backwards compat)
+# ---------------------------------------------------------------------------
 
 class FailureType(Enum):
     FIND_STRING_MISMATCH = "find_string_mismatch"
@@ -12,9 +243,6 @@ class FailureType(Enum):
     OVERSIZED_TASK = "oversized_task"
     SEQUENCING_DEADLOCK = "sequencing_deadlock"
     UNKNOWN = "unknown"
-
-
-from dataclasses import dataclass
 
 
 @dataclass

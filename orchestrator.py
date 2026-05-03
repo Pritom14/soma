@@ -2,13 +2,14 @@ import json
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from dataclasses import dataclass
 
 from config import ACTIVE_DOMAIN, OUTPUTS_DIR, TIER_2_MODEL, TIER_3_MODEL, TIER_2_THRESHOLD
 from core.experience import ExperienceStore
 from core.belief import BeliefStore
 from core.router import route
 from core.llm import LLMClient
-from core.tools import read_file
+from core.tools import read_file, run
 from core import github, locator
 from core.executor import execute_edit
 from core.verifier import verify, detect_stack
@@ -18,12 +19,44 @@ from core.experiment import ExperimentRunner
 from core.pr_monitor import PRMonitor
 from core.goals import GoalStore, GATE_ACT, GATE_GATHER
 from core.repo_tracker import RepoTracker
-from comms.protocol.inbox_reader import InboxReader
-from comms.protocol.outbox_writer import OutboxWriter
-from comms.protocol.decision_gate import DecisionGate
-from comms.protocol.session_memory import SessionMemory
-from comms.protocol.notifier import Notifier
-from comms.protocol.message import make_soma_response, make_soma_update
+from core.task_complexity import TaskComplexityScorer
+from core.planner import RecursivePlanner
+from core.tasks import TaskQueue
+from core.ci_polling import poll_ci_checks, extract_ci_failure_for_retry
+from agents import ContributeAgent, PRManagerAgent, SchedulerAgent
+# TODO: comms.protocol modules need to be created/refactored
+# from comms.protocol.inbox_reader import InboxReader
+# from comms.protocol.outbox_writer import OutboxWriter
+# from comms.protocol.decision_gate import DecisionGate
+# from comms.protocol.session_memory import SessionMemory
+# from comms.protocol.notifier import Notifier
+# from comms.protocol.message import make_soma_response, make_soma_update
+
+# Stub implementations for now
+class InboxReader:
+    def read_pending(self): return []
+    def archive_all(self, *args): pass
+
+class OutboxWriter:
+    def write(self, *args): pass
+    def flush(self, *args): pass
+
+class DecisionGate:
+    def get_pending(self): return []
+    def request(self, *args, **kwargs): return None
+    def check_resolved(self): return []
+    def pending_count(self): return 0
+
+class SessionMemory:
+    def context_for_startup(self): return ""
+    def write(self, data): return None
+    def read_last(self): return None
+
+class Notifier:
+    def notify(self, *args): pass
+
+def make_soma_response(*args, **kwargs): return {}
+def make_soma_update(*args, **kwargs): return {}
 
 
 class SOMA:
@@ -50,7 +83,20 @@ class SOMA:
         self.decision_gate = DecisionGate()
         self.session_memory = SessionMemory()
         self.notifier = Notifier()
+        self.complexity_scorer = TaskComplexityScorer()
+        self.recursive_planner = RecursivePlanner()
+        self.queue = TaskQueue()
+        self.explored_repos = {}  # Track repos explored in this session: {repo_url: ExplorationResult}
         OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Initialize modular agents
+        self.contribute_agent = ContributeAgent(
+            domain=domain, store=self.store,
+            explored_repos=self.explored_repos,
+            self_test_fn=self.self_test
+        )
+        self.pr_manager = PRManagerAgent(domain=domain, store=self.store)
+        self.scheduler = SchedulerAgent(domain=domain, store=self.store)
 
         # Print last session context on startup
         ctx = self.session_memory.context_for_startup()
@@ -849,6 +895,43 @@ class SOMA:
 
             precise_task = self._refine_task_for_codeact(item, file_contexts)
 
+            # --- Complexity gate ---
+            complexity = self.complexity_scorer.score(precise_task, list(file_contexts.keys()))
+            if verbose:
+                print(f"  [complexity] score={complexity.score:.2f} rec={complexity.recommendation}")
+            if self.complexity_scorer.should_reject(complexity):
+                if verbose:
+                    print(f"  [reject] task too complex to attempt safely: {complexity.reasons}")
+                self.decision_gate.request(
+                    body=(
+                        f"SOMA rejected task as too complex (score={complexity.score:.2f}):\n"
+                        f"{precise_task[:300]}\n\nReasons: {'; '.join(complexity.reasons)}"
+                    ),
+                    options=["manual-fix", "decompose-manually", "skip"],
+                    thread_id=f"{repo}#{pr_number}",
+                )
+                results.append({
+                    "item": item,
+                    "status": "rejected",
+                    "reason": "complexity threshold exceeded",
+                    "complexity_score": complexity.score,
+                })
+                continue
+            if self.complexity_scorer.should_decompose(complexity):
+                if verbose:
+                    print(f"  [decompose] routing through RecursivePlanner first")
+                structured = self.recursive_planner.build_structured_plan(
+                    [precise_task],
+                    estimated_complexity=complexity.score,
+                )
+                # Replace the single task with ordered sub-steps joined for the executor
+                precise_task = "\n".join(
+                    f"{i + 1}. {s}" for i, s in enumerate(structured.steps)
+                )
+                if verbose:
+                    print(f"  [decomposed] {len(structured.steps)} sub-step(s)")
+            # --- End complexity gate ---
+
             # Attempt CodeAct with self-review loop — max 2 attempts
             edit_result = None
             diff_ok = False
@@ -1372,28 +1455,54 @@ class SOMA:
             print("\n[SOMA] Step 2: Checking goals")
         report["goals"] = self.update_goals(verbose=verbose)
 
-        # Step 3: Scan repos for new issue candidates
+        # Step 3: Get next ready task from queue
         if verbose:
-            print("\n[SOMA] Step 3: Scanning repos for new issues")
-        oss_beliefs = BeliefStore("oss_contribution")
-        candidates = self.repo_tracker.scan(oss_beliefs, self.store)
-        report["candidates"] = [
-            {"repo": c.repo, "number": c.number, "title": c.title,
-             "score": c.score, "confidence": c.confidence, "reason": c.reason}
-            for c in candidates[:5]
-        ]
-        if verbose:
-            if candidates:
-                print(f"[SOMA]   Found {len(candidates)} candidate(s)")
-                for c in candidates[:3]:
-                    print(f"[SOMA]   [{c.score:.2f}] {c.repo}#{c.number} — {c.title[:60]}")
-                    print(f"[SOMA]          {c.reason}")
-            else:
-                print("[SOMA]   No new issues found.")
+            print("\n[SOMA] Step 3: Getting next ready task from queue")
+        task = self.queue.next_ready()
+        candidates = []
+        if task:
+            # Convert task to candidate-like structure for compatibility
+            context = task.context
+            candidates = [{
+                "repo": context.get("repo", ""),
+                "number": context.get("issue_number", 0),
+                "title": context.get("task_description", ""),
+                "score": 0.0,
+                "confidence": 0.0,
+                "reason": f"Task {task.id} ({task.type})"
+            }]
+            report["candidates"] = candidates[:5]
+            if verbose:
+                if candidates:
+                    print(f"[SOMA]   Got task: {task.id} — {candidates[0]['title'][:60]}")
+                    print(f"[SOMA]          Type: {task.type}")
+        else:
+            # Fallback: scan repos if no queued task
+            if verbose:
+                print("[SOMA]   No queued tasks, scanning repos for new issues")
+            oss_beliefs = BeliefStore("oss_contribution")
+            repo_candidates = self.repo_tracker.scan(oss_beliefs, self.store)
+            candidates = [
+                {"repo": c.repo, "number": c.number, "title": c.title,
+                 "score": c.score, "confidence": c.confidence, "reason": c.reason}
+                for c in repo_candidates[:5]
+            ]
+            report["candidates"] = candidates
+            if verbose:
+                if repo_candidates:
+                    print(f"[SOMA]   Found {len(repo_candidates)} candidate(s)")
+                    for c in repo_candidates[:3]:
+                        print(f"[SOMA]   [{c.score:.2f}] {c.repo}#{c.number} — {c.title[:60]}")
+                        print(f"[SOMA]          {c.reason}")
+                else:
+                    print("[SOMA]   No new issues found.")
 
         # Step 4: Apply confidence gate to the top candidate
         if candidates:
             top = candidates[0]
+            # Track task ID if this came from the queue
+            task_id = task.id if task else None
+
             if verbose:
                 print(f"\n[SOMA] Step 4: Confidence gate for top candidate")
                 print(f"[SOMA]   {top.repo}#{top.number}: {top.title[:60]}")
@@ -1410,6 +1519,9 @@ class SOMA:
                 }
                 if verbose:
                     print(f"[SOMA]   Ready to contribute autonomously to {top.repo}#{top.number}")
+                # Mark queued task as running if applicable
+                if task_id:
+                    self.queue.update_status(task_id, "running")
             elif gate["recommendation"] == "gather":
                 report["next_action"] = {
                     "type": "gather",
@@ -1908,6 +2020,11 @@ class SOMA:
             status = "actionable" if belief.is_actionable else "stale"
             print(f"  {score:.3f}  ({belief.confidence:.0%}) [{status}] {belief.statement[:70]}")
 
+    def dream_cycle(self, verbose: bool = True) -> dict:
+        """Run the dream cycle: consolidate experiences, introspect, and self-modify."""
+        from bootstrap.dream_cycle import run
+        return run(verbose=verbose)
+
     # ------------------------------------------------------------------
     # OSS feedback loop
     # ------------------------------------------------------------------
@@ -1972,187 +2089,17 @@ class SOMA:
         """
         Full loop: GitHub issue → locate files → edit → verify → PR.
 
+        Delegates to ContributeAgent for the core contribution logic.
+
         Args:
             issue_url: Full GitHub issue URL
             repo_override: e.g. "composiohq/agent-orchestrator" (inferred from URL if omitted)
             dry_run: If True, stops before creating the PR
+
+        Returns:
+            dict with keys: success, pr_url, verify, iterations, files_changed, ci_checks_passed (and error if failed)
         """
-        print(f"\n[SOMA] Contribute mode")
-        print(f"[SOMA] Issue  : {issue_url}")
-
-        # 1. Parse repo + issue number from URL
-        repo = repo_override or github.repo_from_url(issue_url)
-        issue_number = github.issue_number_from_url(issue_url)
-        if not repo or not issue_number:
-            return {"success": False, "error": "Could not parse repo or issue number from URL"}
-
-        if not github.check_gh_auth():
-            return {"success": False, "error": "gh CLI not authenticated. Run: gh auth login"}
-
-        # 2. Fetch issue details
-        issue = github.get_issue(repo, issue_number)
-        if not issue:
-            return {"success": False, "error": f"Could not fetch issue #{issue_number}"}
-        print(f"[SOMA] Issue  : #{issue.number} - {issue.title}")
-
-        # Confidence gate — decide whether to act, gather, or surface
-        gate = self.confidence_gate(f"{issue.title} {issue.body[:200]}", verbose=True)
-        if gate["recommendation"] == "surface":
-            return {
-                "success": False,
-                "error": f"Confidence too low to act autonomously. {gate['reason']}",
-                "gate": gate["recommendation"],
-                "avg_confidence": gate["avg_confidence"],
-            }
-        if gate["recommendation"] == "gather":
-            print(f"[SOMA] Gathering more context before proceeding...")
-
-        # Pre-contribution self-test: refresh stale beliefs before acting
-        stale_beliefs = [
-            b for b in self.beliefs.all()
-            if not b.is_actionable or b.confidence < 0.5
-        ]
-        if stale_beliefs:
-            print(f"[SOMA] Pre-contribution self-test ({len(stale_beliefs)} stale belief(s))...")
-            self.self_test(limit=2, trigger="pre_contribution")
-
-        # 3. Clone repo to temp dir
-        with tempfile.TemporaryDirectory(prefix="soma_contrib_") as tmp:
-            repo_path = Path(tmp) / repo.split("/")[-1]
-            print(f"[SOMA] Cloning : {repo}")
-            clone = github.clone_repo(repo, repo_path)
-            if not clone.success:
-                return {"success": False, "error": f"Clone failed: {clone.stderr[:200]}"}
-
-            # 4. Understand structure
-            stack = detect_stack(repo_path)
-            structure = locator.repo_structure(repo_path)
-            print(f"[SOMA] Stack   : {stack}")
-
-            # Install dependencies so build/lint/test tools are available
-            if stack == "typescript":
-                from core.tools import run as _run
-                print(f"[SOMA] Installing deps...")
-                inst = _run(["pnpm", "install", "--frozen-lockfile"], cwd=repo_path, timeout=180)
-                if not inst.success:
-                    print(f"[SOMA] Install warn: {inst.stderr[:100]}")
-
-            # 5. Locate relevant files (Agentless-style)
-            print(f"[SOMA] Locating relevant files...")
-            locations = locator.locate(
-                issue.body, issue.title, repo_path,
-                extensions=_stack_extensions(stack),
-            )
-            if not locations:
-                return {"success": False, "error": "Could not locate relevant files in repo"}
-            for loc in locations[:3]:
-                print(f"[SOMA]   {loc.relevance:.0%} {loc.file} ({loc.reason})")
-
-            # 6. Build file context
-            file_contexts = {}
-            for loc in locations[:5]:
-                content = read_file(loc.file, max_lines=200)
-                file_contexts[loc.file] = content
-
-            # 7. Choose model — code edits always use TIER_1 (32b); routing only
-            # affects confidence reporting, not model selection for actual edits
-            from config import TIER_1_MODEL
-            similar = self.store.find_similar(issue.title, "code")
-            decision = route(issue.title, "code", similar)
-            model = TIER_1_MODEL
-            print(f"[SOMA] Model   : {model} (Tier 1, route confidence={decision.confidence:.0%})")
-
-            # 8. Build beliefs context
-            beliefs = self.beliefs.get_relevant(f"{issue.title} {issue.body[:200]}")
-            beliefs_ctx = "\n".join(
-                f"- {b.statement} ({b.confidence:.0%})" for b in beliefs
-            ) if beliefs else ""
-
-            # 9. CodeAct: generate edit → run → self-correct
-            task = (
-                f"Fix GitHub issue #{issue.number}: {issue.title}\n\n"
-                f"Issue description:\n{issue.body[:800]}\n\n"
-                f"Repo structure (partial):\n{structure[:600]}"
-            )
-            print(f"[SOMA] Editing...")
-            edit = execute_edit(task, file_contexts, repo_path, self.llm, model, beliefs_ctx)
-
-            if not edit.success:
-                self.store.record(
-                    domain="code", context=issue.title, action="attempted fix",
-                    outcome=edit.error, success=False, model_used=model,
-                )
-                return {"success": False, "error": edit.error, "iterations": edit.iterations}
-
-            print(f"[SOMA] Edit OK  : {edit.iterations} iteration(s), {len(edit.files_changed)} file(s) changed")
-
-            # 10. Verify
-            print(f"[SOMA] Verifying...")
-            verify_result = verify(repo_path, stack)
-            print(f"[SOMA] Verify  : {verify_result}")
-
-            if not verify_result.success:
-                self.store.record(
-                    domain="code", context=issue.title, action=edit.final_script[:300],
-                    outcome=f"Verification failed: {verify_result.summary}",
-                    success=False, model_used=model,
-                )
-                return {
-                    "success": False,
-                    "error": "Verification failed",
-                    "verify": str(verify_result),
-                    "details": verify_result.details,
-                }
-
-            # 11. Record successful experience (with belief_ids for PR tracking)
-            active_belief_ids = [b.id for b in beliefs]
-            self.store.record(
-                domain="code", context=issue.title, action=edit.final_script[:300],
-                outcome=f"Fix verified. Files: {edit.files_changed}",
-                success=True, model_used=model,
-                notes=json.dumps({
-                    "belief_ids": active_belief_ids,
-                    "pr_branch": f"soma/fix-{issue_number}",
-                    "repo": repo,
-                }),
-            )
-
-            if dry_run:
-                print(f"[SOMA] Dry run  : Stopping before PR creation")
-                return {"success": True, "dry_run": True, "edit": edit.final_script}
-
-            # 12. Branch + commit + PR
-            branch = f"soma/fix-{issue_number}"
-            print(f"[SOMA] Branch  : {branch}")
-            github.create_branch(branch, repo_path)
-            push = github.commit_and_push(
-                branch,
-                f"fix: resolve #{issue_number} - {issue.title[:60]}\n\nCo-authored-by: SOMA agent",
-                repo_path,
-            )
-            if not push.success:
-                return {"success": False, "error": f"Push failed: {push.stderr[:200]}"}
-
-            pr_body = (
-                f"Fixes #{issue_number}\n\n"
-                f"## What changed\n{edit.output[:400]}\n\n"
-                f"## Verification\n{verify_result.summary}\n\n"
-                f"_Generated by SOMA - self-learning contribution agent_"
-            )
-            pr = github.create_pr(repo, f"fix: {issue.title[:70]}", pr_body, branch)
-
-            if pr.success:
-                print(f"[SOMA] PR      : {pr.url}")
-            else:
-                print(f"[SOMA] PR failed: {pr.error}")
-
-            return {
-                "success": pr.success,
-                "pr_url": pr.url,
-                "verify": str(verify_result),
-                "iterations": edit.iterations,
-                "files_changed": edit.files_changed,
-            }
+        return self.contribute_agent.contribute(issue_url, repo_override=repo_override, dry_run=dry_run)
 
 
 def _stack_extensions(stack: str) -> list[str]:
@@ -2161,3 +2108,457 @@ def _stack_extensions(stack: str) -> list[str]:
         "python": [".py"],
         "go": [".go"],
     }.get(stack, [".ts", ".py", ".js"])
+
+
+# =============================================================================
+# Proactive Repository Exploration
+# =============================================================================
+# Before first contribution to a repo, SOMA explores:
+# - README.md: tech stack, contribution guidelines
+# - CONTRIBUTING.md: code style, test requirements, PR process
+# - Linting configs: .eslintrc, .ruff.toml, pyproject.toml, .prettierrc
+# - Source files: sample 5-10 diverse files to extract conventions
+# Result: belief candidates that inform code generation and review
+
+
+import re
+from typing import Optional
+from pathlib import Path
+
+
+@dataclass
+class ExplorationResult:
+    """Results from exploring a repository."""
+    repo_url: str
+    success: bool
+    error: Optional[str] = None
+    readme_content: Optional[str] = None
+    contributing_content: Optional[str] = None
+    linting_configs: dict = None  # {filename: content}
+    sampled_files: dict = None  # {filepath: content}
+    conventions: dict = None  # {convention_type: findings}
+    belief_candidates: list = None  # List of belief dicts
+
+
+@dataclass
+class BeliefCandidate:
+    """A candidate belief extracted during repo exploration."""
+    statement: str
+    domain: str = "oss_contribution"
+    confidence: float = 0.55
+
+
+def _clone_repo_temp(repo_url: str) -> tuple[Optional[Path], Optional[str]]:
+    """Clone repo to temporary directory. Returns (repo_path, error)."""
+    try:
+        tmp_dir = Path(tempfile.mkdtemp(prefix="soma_explore_"))
+        repo_name = repo_url.rstrip("/").split("/")[-1]
+        repo_path = tmp_dir / repo_name
+
+        result = github.clone_repo(repo_url, repo_path)
+        if not result.success:
+            return None, f"Clone failed: {result.stderr[:200]}"
+
+        return repo_path, None
+    except Exception as e:
+        return None, str(e)
+
+
+def _extract_readme_insights(readme_content: str) -> dict:
+    """Extract tech stack and contribution hints from README.md."""
+    findings = {
+        "tech_stack": [],
+        "contribution_mentions": [],
+    }
+
+    if not readme_content:
+        return findings
+
+    # Look for tech stack indicators
+    tech_patterns = {
+        "python": r"\bpython\b|\b3\.\d+\b",
+        "typescript": r"\btypescript\b|\b\.ts\b",
+        "javascript": r"\bjavascript\b|\bnode\.js\b",
+        "react": r"\breact\b",
+        "golang": r"\bgo\b(?!ing)|golang",
+        "rust": r"\brust\b",
+        "docker": r"\bdocker\b",
+        "kubernetes": r"\bk8s\b|kubernetes",
+    }
+
+    for tech, pattern in tech_patterns.items():
+        if re.search(pattern, readme_content, re.IGNORECASE):
+            findings["tech_stack"].append(tech)
+
+    # Extract contribution guidelines sentences
+    lines = readme_content.split("\n")
+    for i, line in enumerate(lines):
+        lower = line.lower()
+        if "contribut" in lower or "pull request" in lower or "pr" in lower:
+            # Grab this line and next 2 for context
+            snippet = "\n".join(lines[i:min(i + 3, len(lines))])
+            findings["contribution_mentions"].append(snippet.strip())
+
+    return findings
+
+
+def _parse_linting_config(config_content: str, config_type: str) -> dict:
+    """Parse linting config and extract relevant settings."""
+    findings = {}
+
+    if config_type == "eslintrc":
+        # Extract extends, rules, parser settings
+        try:
+            import json
+            config = json.loads(config_content)
+            findings["extends"] = config.get("extends", [])
+            findings["rules"] = list(config.get("rules", {}).keys())[:5]  # Top 5 rules
+            findings["parser"] = config.get("parser")
+        except Exception:
+            findings["parse_error"] = "Could not parse JSON"
+
+    elif config_type == "ruff":
+        # Extract line-length, select/ignore
+        if "line-length" in config_content:
+            match = re.search(r'line-length\s*=\s*(\d+)', config_content)
+            if match:
+                findings["line_length"] = int(match.group(1))
+
+        # Extract select/ignore rules
+        for key in ["select", "ignore"]:
+            pattern = rf'{key}\s*=\s*\[(.*?)\]'
+            match = re.search(pattern, config_content, re.DOTALL)
+            if match:
+                rules = match.group(1)
+                findings[key] = [r.strip().strip('"\'') for r in rules.split(",")]
+
+    elif config_type == "prettierrc":
+        # Extract formatting preferences
+        try:
+            import json
+            config = json.loads(config_content)
+            findings["semi"] = config.get("semi")
+            findings["single_quote"] = config.get("singleQuote")
+            findings["trailing_comma"] = config.get("trailingComma")
+            findings["tab_width"] = config.get("tabWidth")
+        except Exception:
+            findings["parse_error"] = "Could not parse JSON"
+
+    elif config_type == "pyproject":
+        # Extract tool.ruff section
+        if "[tool.ruff" in config_content:
+            section = config_content[config_content.find("[tool.ruff"):]
+            section = section[:section.find("\n[") if "\n[" in section else None]
+
+            if "line-length" in section:
+                match = re.search(r'line-length\s*=\s*(\d+)', section)
+                if match:
+                    findings["line_length"] = int(match.group(1))
+
+            findings["has_tool_ruff"] = True
+
+    return findings
+
+
+def _sample_source_files(repo_path: Path, stack: str, limit: int = 8) -> dict:
+    """Sample diverse source files from the repo."""
+    sampled = {}
+
+    # Determine extensions based on stack
+    extensions = _stack_extensions(stack)
+
+    # Find entry points (main.py, index.ts, app.py, etc.)
+    entry_patterns = ["main.py", "index.ts", "index.tsx", "app.py", "main.ts", "index.js"]
+    test_patterns = ["test_*.py", "*_test.py", "*.test.ts", "*.test.tsx", "*.spec.ts"]
+
+    files = list(repo_path.rglob("*"))
+    files = [f for f in files if f.is_file() and f.suffix in extensions]
+
+    # Prioritize diversity: entry point, test, utility, then random
+    priority_files = []
+
+    for pattern in entry_patterns:
+        for f in files:
+            if f.name == pattern:
+                priority_files.append(f)
+                break
+
+    for pattern in test_patterns:
+        import fnmatch
+        for f in files:
+            if fnmatch.fnmatch(f.name, pattern):
+                priority_files.append(f)
+
+    # Add some utilities (files with "util", "helper" in name)
+    for f in files:
+        if "util" in f.name.lower() or "helper" in f.name.lower():
+            if f not in priority_files:
+                priority_files.append(f)
+
+    # Fill remaining with random files
+    remaining = [f for f in files if f not in priority_files]
+    import random
+    remaining = random.sample(remaining, min(5, len(remaining)))
+    priority_files.extend(remaining)
+
+    # Sample up to limit files
+    for file_path in priority_files[:limit]:
+        try:
+            content = read_file(file_path, max_lines=150)
+            rel_path = str(file_path.relative_to(repo_path))
+            sampled[rel_path] = content
+        except Exception as e:
+            pass  # Skip files we can't read
+
+    return sampled
+
+
+def _extract_conventions(sampled_files: dict) -> dict:
+    """Extract coding conventions from sampled files."""
+    conventions = {
+        "import_style": [],
+        "docstring_style": [],
+        "naming_conventions": [],
+        "error_handling": [],
+        "comment_style": [],
+    }
+
+    combined_text = "\n".join(sampled_files.values())
+
+    # Import patterns
+    if "from " in combined_text and " import " in combined_text:
+        conventions["import_style"].append("from X import Y (explicit imports)")
+    if "import " in combined_text and " as " in combined_text:
+        conventions["import_style"].append("import X as Y (aliased imports)")
+
+    # Docstring patterns
+    if '"""' in combined_text:
+        conventions["docstring_style"].append("triple-quoted docstrings")
+    if "'''" in combined_text:
+        conventions["docstring_style"].append("triple-single-quoted docstrings")
+    if "/*" in combined_text:
+        conventions["docstring_style"].append("block comments /* */")
+    if "//" in combined_text:
+        conventions["docstring_style"].append("line comments //")
+
+    # Naming conventions
+    snake_case = len(re.findall(r'[a-z]+_[a-z]+', combined_text))
+    camel_case = len(re.findall(r'[a-z]+[A-Z]+', combined_text))
+    if snake_case > camel_case:
+        conventions["naming_conventions"].append("snake_case preferred")
+    elif camel_case > snake_case:
+        conventions["naming_conventions"].append("camelCase preferred")
+
+    # Error handling
+    if "try:" in combined_text or "try {" in combined_text:
+        conventions["error_handling"].append("explicit try-catch/try-except blocks")
+    if "?." in combined_text or "Optional" in combined_text:
+        conventions["error_handling"].append("optional chaining / type hints")
+
+    # Comment style
+    if "# " in combined_text:
+        conventions["comment_style"].append("# single-line comments")
+
+    return conventions
+
+
+def _generate_belief_candidates(
+    exploration: ExplorationResult,
+) -> list[BeliefCandidate]:
+    """Generate belief candidates from exploration findings."""
+    candidates = []
+
+    if not exploration.conventions:
+        return candidates
+
+    conv = exploration.conventions
+
+    # Import style beliefs
+    if "from X import Y (explicit imports)" in conv.get("import_style", []):
+        candidates.append(
+            BeliefCandidate(
+                statement="code uses explicit 'from X import Y' patterns",
+                confidence=0.60,
+            )
+        )
+
+    if "import X as Y (aliased imports)" in conv.get("import_style", []):
+        candidates.append(
+            BeliefCandidate(
+                statement="code frequently uses aliased imports (import X as Y)",
+                confidence=0.55,
+            )
+        )
+
+    # Docstring style beliefs
+    if "triple-quoted docstrings" in conv.get("docstring_style", []):
+        candidates.append(
+            BeliefCandidate(
+                statement='functions documented with triple-quoted docstrings (""")',
+                confidence=0.65,
+            )
+        )
+
+    # Naming convention beliefs
+    if "snake_case preferred" in conv.get("naming_conventions", []):
+        candidates.append(
+            BeliefCandidate(
+                statement="identifiers follow snake_case convention",
+                confidence=0.70,
+            )
+        )
+
+    if "camelCase preferred" in conv.get("naming_conventions", []):
+        candidates.append(
+            BeliefCandidate(
+                statement="identifiers follow camelCase convention",
+                confidence=0.70,
+            )
+        )
+
+    # Error handling beliefs
+    if "explicit try-catch/try-except blocks" in conv.get("error_handling", []):
+        candidates.append(
+            BeliefCandidate(
+                statement="error handling uses explicit try-catch/except blocks",
+                confidence=0.60,
+            )
+        )
+
+    # Linting config beliefs
+    if exploration.linting_configs:
+        if ".eslintrc" in exploration.linting_configs:
+            eslint_cfg = exploration.linting_configs[".eslintrc"]
+            if "parse_error" not in eslint_cfg:
+                candidates.append(
+                    BeliefCandidate(
+                        statement="project enforces ESLint rules during development",
+                        confidence=0.75,
+                    )
+                )
+
+        if ".prettierrc" in exploration.linting_configs:
+            prettier_cfg = exploration.linting_configs[".prettierrc"]
+            if prettier_cfg.get("semi") is False:
+                candidates.append(
+                    BeliefCandidate(
+                        statement="code style uses semicolons=false (prettier config)",
+                        confidence=0.70,
+                    )
+                )
+
+        if ".ruff.toml" in exploration.linting_configs or (
+            "pyproject.toml" in exploration.linting_configs
+            and exploration.linting_configs["pyproject.toml"].get("has_tool_ruff")
+        ):
+            candidates.append(
+                BeliefCandidate(
+                    statement="Python code checked with ruff linter",
+                    confidence=0.75,
+                )
+            )
+
+    return candidates
+
+
+def explore_repo(repo_url: str) -> ExplorationResult:
+    """
+    Proactively explore a repository to extract coding conventions and
+    generate belief candidates before attempting contributions.
+
+    Args:
+        repo_url: GitHub URL or owner/repo string
+
+    Returns:
+        ExplorationResult with findings and belief candidates
+    """
+    # Normalize URL to owner/repo format
+    if repo_url.startswith("http"):
+        # Extract from https://github.com/owner/repo
+        parts = repo_url.rstrip("/").split("/")
+        if len(parts) >= 2:
+            repo_url = f"{parts[-2]}/{parts[-1]}"
+
+    print(f"[SOMA] Exploring repo: {repo_url}")
+
+    # Clone to temp directory
+    repo_path, clone_error = _clone_repo_temp(repo_url)
+    if clone_error:
+        return ExplorationResult(
+            repo_url=repo_url,
+            success=False,
+            error=clone_error,
+        )
+
+    try:
+        result = ExplorationResult(
+            repo_url=repo_url,
+            success=True,
+            linting_configs={},
+            sampled_files={},
+            conventions={},
+            belief_candidates=[],
+        )
+
+        # 1. Read README.md
+        readme_path = repo_path / "README.md"
+        if readme_path.exists():
+            result.readme_content = readme_path.read_text(errors="replace")
+            readme_insights = _extract_readme_insights(result.readme_content)
+            print(f"[SOMA]   README: detected tech: {readme_insights['tech_stack']}")
+
+        # 2. Read CONTRIBUTING.md
+        contrib_path = repo_path / "CONTRIBUTING.md"
+        if contrib_path.exists():
+            result.contributing_content = contrib_path.read_text(errors="replace")
+            print(f"[SOMA]   CONTRIBUTING.md found")
+
+        # 3. Detect stack and sample files
+        stack = detect_stack(repo_path)
+        result.sampled_files = _sample_source_files(repo_path, stack, limit=8)
+        print(f"[SOMA]   Sampled {len(result.sampled_files)} source files")
+
+        # 4. Extract conventions from samples
+        result.conventions = _extract_conventions(result.sampled_files)
+        print(f"[SOMA]   Extracted conventions: {list(result.conventions.keys())}")
+
+        # 5. Parse linting configs
+        linting_files = [".eslintrc", ".eslintrc.json", ".prettierrc", ".ruff.toml"]
+        for config_file in linting_files:
+            config_path = repo_path / config_file
+            if config_path.exists():
+                content = config_path.read_text(errors="replace")
+
+                if "eslint" in config_file:
+                    result.linting_configs[config_file] = _parse_linting_config(
+                        content, "eslintrc"
+                    )
+                elif "prettier" in config_file:
+                    result.linting_configs[config_file] = _parse_linting_config(
+                        content, "prettierrc"
+                    )
+                elif "ruff" in config_file:
+                    result.linting_configs[config_file] = _parse_linting_config(
+                        content, "ruff"
+                    )
+
+        # 6. Check pyproject.toml for [tool.ruff]
+        pyproject_path = repo_path / "pyproject.toml"
+        if pyproject_path.exists():
+            content = pyproject_path.read_text(errors="replace")
+            result.linting_configs["pyproject.toml"] = _parse_linting_config(
+                content, "pyproject"
+            )
+
+        print(f"[SOMA]   Linting configs: {list(result.linting_configs.keys())}")
+
+        # 7. Generate belief candidates
+        result.belief_candidates = _generate_belief_candidates(result)
+        print(f"[SOMA]   Generated {len(result.belief_candidates)} belief candidate(s)")
+
+        return result
+
+    finally:
+        # Cleanup temp directory
+        import shutil
+        shutil.rmtree(repo_path.parent, ignore_errors=True)

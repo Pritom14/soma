@@ -6,8 +6,10 @@ Generates a structured step-by-step plan before CodeAct execution.
 Separates planning from execution to reduce hallucination and iteration errors.
 """
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 from core.llm import LLMClient
 from core.dependency_analyzer import DependencyAnalyzer
@@ -31,6 +33,16 @@ class ExecutionPlan:
     notes: str = ""
     valid: bool = True
     validation_errors: list[str] = field(default_factory=list)
+
+
+@dataclass
+class StructuredPlan:
+    """Richer plan produced by the recursive decomposer."""
+
+    steps: list[str]
+    depth_levels: dict[str, int]  # step text -> nesting depth
+    dependencies: list[tuple[int, int]]  # (dependent_idx, dependency_idx)
+    estimated_complexity: float  # mirrors ComplexityScore.score
 
 
 _PLANNER_SYSTEM = (
@@ -193,3 +205,240 @@ def decompose_complex_steps(plan: ExecutionPlan, llm: LLMClient, model: str) -> 
 
     plan.steps = DependencyAnalyzer().reorder(new_steps)
     return plan
+
+
+# ---------------------------------------------------------------------------
+# RecursivePlanner — high-level decomposer with hazard detection
+# ---------------------------------------------------------------------------
+
+# Verb-only patterns — used to find the start of a "define" or "use" region.
+# _scan_window collects all identifiers in the following 80 chars.
+_DEFINES_VERB_RE = re.compile(
+    r"\b(?:add|create|define|implement|write|introduce)\b",
+    re.IGNORECASE,
+)
+
+_USES_VERB_RE = re.compile(
+    r"\b(?:use|call|invoke|import|apply|reference|update|modify|test|verify)\b",
+    re.IGNORECASE,
+)
+
+# Legacy single-capture regexes kept for any direct callers (not used internally)
+_DEFINES_RE = _DEFINES_VERB_RE
+_USES_RE = _USES_VERB_RE
+
+# Common English stop-words to skip when extracting names
+_STOP_WORDS = {
+    "the", "and", "with", "for", "from", "into", "that", "this",
+    "its", "new", "all", "any", "each", "also", "then", "when",
+    "file", "step", "code", "data", "value", "class", "function",
+}
+
+
+class RecursivePlanner:
+    """
+    Heuristic planner that:
+      - decomposes complex step descriptions into atomic sub-steps
+      - detects out-of-order dependencies between steps
+      - reorders steps into a safe execution sequence
+    """
+
+    # Maximum recursion depth for decomposition
+    MAX_DEPTH = 3
+
+    # ---------------------------------------------------------------------------
+    # Public API
+    # ---------------------------------------------------------------------------
+
+    def decompose_step(self, step: str, _depth: int = 0) -> list[str]:
+        """
+        Break a complex step description into atomic sub-steps.
+
+        A step is considered complex if it contains multiple conjunctions
+        ("and", "then", "also", ";") or multiple action verbs.  Recursion
+        stops when the step is already atomic or MAX_DEPTH is reached.
+        """
+        if _depth >= self.MAX_DEPTH:
+            return [step.strip()]
+
+        parts = self._split_on_conjunctions(step)
+        if len(parts) <= 1:
+            # Try splitting on semicolons / numbered lists
+            parts = self._split_on_punctuation(step)
+
+        if len(parts) <= 1:
+            return [step.strip()]
+
+        result: list[str] = []
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            sub = self.decompose_step(part, _depth + 1)
+            result.extend(sub)
+
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for s in result:
+            if s not in seen:
+                seen.add(s)
+                deduped.append(s)
+        return deduped
+
+    def detect_sequencing_hazards(self, steps: list[str]) -> list[tuple[int, int]]:
+        """
+        Return pairs (i, j) where step[i] depends on something defined by step[j]
+        but j > i (i.e. the dependency comes after the step that needs it).
+
+        Each tuple is (dependent_index, dependency_index).
+        """
+        defines: dict[str, int] = {}  # name -> first step index that defines it
+        for idx, step in enumerate(steps):
+            for name in self._extract_defined_names(step):
+                if name not in defines:
+                    defines[name] = idx
+
+        hazards: list[tuple[int, int]] = []
+        for idx, step in enumerate(steps):
+            for name in self._extract_used_names(step):
+                if name in defines and defines[name] > idx:
+                    pair = (idx, defines[name])
+                    if pair not in hazards:
+                        hazards.append(pair)
+
+        return hazards
+
+    def reorder_for_dependencies(self, steps: list[str]) -> list[str]:
+        """
+        Return steps in a safe execution order (definitions before usages).
+
+        Uses a stable topological sort.  If a cycle is detected the original
+        order is returned unchanged.
+        """
+        n = len(steps)
+        if n == 0:
+            return steps
+
+        defines: dict[str, int] = {}
+        for idx, step in enumerate(steps):
+            for name in self._extract_defined_names(step):
+                if name not in defines:
+                    defines[name] = idx
+
+        # Build dependency graph: deps[i] = set of indices that must come before i
+        deps: dict[int, set[int]] = {i: set() for i in range(n)}
+        for idx, step in enumerate(steps):
+            for name in self._extract_used_names(step):
+                if name in defines and defines[name] != idx:
+                    deps[idx].add(defines[name])
+
+        # Kahn's algorithm — stable (preserves relative order for tied nodes)
+        in_degree = [len(deps[i]) for i in range(n)]
+        # Use a list as a stable queue (sorted to preserve original order)
+        ready = sorted(i for i in range(n) if in_degree[i] == 0)
+        order: list[int] = []
+
+        while ready:
+            node = ready.pop(0)
+            order.append(node)
+            for j in range(n):
+                if node in deps[j]:
+                    deps[j].discard(node)
+                    in_degree[j] -= 1
+                    if in_degree[j] == 0:
+                        ready.append(j)
+                        ready.sort()  # keep stable
+
+        if len(order) != n:
+            # Cycle detected — fall back to original order
+            return steps
+
+        return [steps[i] for i in order]
+
+    def build_structured_plan(
+        self,
+        raw_steps: list[str],
+        estimated_complexity: float = 0.0,
+    ) -> StructuredPlan:
+        """
+        Decompose each step, detect hazards, reorder, and return a StructuredPlan.
+        """
+        # 1. Decompose each raw step
+        decomposed: list[str] = []
+        depth_levels: dict[str, int] = {}
+        for step in raw_steps:
+            subs = self.decompose_step(step)
+            for sub in subs:
+                decomposed.append(sub)
+                # Depth is 0 for top-level; sub-steps inherit depth from recursion
+                depth_levels[sub] = 0 if sub == step else 1
+
+        # 2. Detect hazards before reordering
+        hazards = self.detect_sequencing_hazards(decomposed)
+
+        # 3. Reorder
+        ordered = self.reorder_for_dependencies(decomposed)
+
+        # Recompute depth_levels index for reordered list
+        ordered_depths = {s: depth_levels.get(s, 0) for s in ordered}
+
+        # Convert hazard step-text pairs to index pairs in the reordered list
+        step_to_idx = {s: i for i, s in enumerate(ordered)}
+        dep_pairs: list[tuple[int, int]] = []
+        for dependent_txt, dependency_txt in [
+            (decomposed[h[0]], decomposed[h[1]]) for h in hazards
+        ]:
+            if dependent_txt in step_to_idx and dependency_txt in step_to_idx:
+                dep_pairs.append((step_to_idx[dependent_txt], step_to_idx[dependency_txt]))
+
+        return StructuredPlan(
+            steps=ordered,
+            depth_levels=ordered_depths,
+            dependencies=dep_pairs,
+            estimated_complexity=estimated_complexity,
+        )
+
+    # ---------------------------------------------------------------------------
+    # Private helpers
+    # ---------------------------------------------------------------------------
+
+    def _split_on_conjunctions(self, text: str) -> list[str]:
+        """Split on ' and ', ' then ', ' also ', ' after that '."""
+        pattern = re.compile(
+            r"\s+(?:and then|and also|then|also|after that|afterwards)\s+",
+            re.IGNORECASE,
+        )
+        parts = pattern.split(text)
+        return parts if len(parts) > 1 else [text]
+
+    def _split_on_punctuation(self, text: str) -> list[str]:
+        """Split on semicolons or numbered list markers like '1. ... 2. ...'."""
+        # Try numbered list first
+        numbered = re.split(r"\s+\d+\.\s+", text)
+        if len(numbered) > 1:
+            return [p for p in numbered if p.strip()]
+
+        # Fall back to semicolons
+        by_semi = [p for p in text.split(";") if p.strip()]
+        return by_semi if len(by_semi) > 1 else [text]
+
+    def _extract_defined_names(self, step: str) -> list[str]:
+        return self._scan_window(step, _DEFINES_VERB_RE)
+
+    def _extract_used_names(self, step: str) -> list[str]:
+        return self._scan_window(step, _USES_VERB_RE)
+
+    def _scan_window(self, step: str, verb_re: re.Pattern) -> list[str]:
+        """
+        Find all action verbs matched by verb_re.  For each match, collect
+        every non-stop-word identifier (3+ chars) in the following 80 chars.
+        """
+        names: list[str] = []
+        for m in verb_re.finditer(step):
+            window = step[m.end(): m.end() + 80]
+            for word in re.findall(r"\b(\w{3,})\b", window):
+                w = word.lower()
+                if w not in _STOP_WORDS:
+                    names.append(w)
+        return list(dict.fromkeys(names))  # deduplicate, preserve order

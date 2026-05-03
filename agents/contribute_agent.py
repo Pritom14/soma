@@ -19,6 +19,21 @@ from agents.base import BaseAgent
 
 
 class ContributeAgent(BaseAgent):
+    def __init__(self, domain: str = ACTIVE_DOMAIN, store: ExperienceStore = None,
+                 explored_repos: dict = None, self_test_fn = None):
+        """
+        Initialize ContributeAgent with optional SOMA context.
+
+        Args:
+            domain: Domain for beliefs (usually "code")
+            store: Shared experience store
+            explored_repos: Dict tracking {repo: ExplorationResult} for session
+            self_test_fn: Callable(limit, trigger) → list, for running pre-contribution self-tests
+        """
+        super().__init__(domain=domain, store=store)
+        self.explored_repos = explored_repos if explored_repos is not None else {}
+        self.self_test_fn = self_test_fn
+
     def build_local(self, task: str, repo_path: str, files: list[str] = None,
                     verbose: bool = True) -> dict:
         """
@@ -264,9 +279,9 @@ Return ONLY the JSON array."""
             b for b in self.beliefs.all()
             if not b.is_actionable or b.confidence < 0.5
         ]
-        if stale_beliefs:
+        if stale_beliefs and self.self_test_fn:
             print(f"[SOMA] Pre-contribution self-test ({len(stale_beliefs)} stale belief(s))...")
-            self.self_test(limit=2, trigger="pre_contribution")
+            self.self_test_fn(limit=2, trigger="pre_contribution")
 
         # 3. Clone repo to temp dir
         with tempfile.TemporaryDirectory(prefix="soma_contrib_") as tmp:
@@ -450,44 +465,105 @@ Return ONLY the JSON array."""
                 "files_changed": edit.files_changed,
             }
 
-            # 13. CI-Aware verification loop
+            # 13. CI-Aware auto-retry loop
             if pr.success:
-                try:
-                    import subprocess as _sp
-                    import time as _time
-                    pr_number_ci = github.issue_number_from_url(pr.url)
-                    for _attempt in range(20):  # max 10 min (20 × 30s)
-                        _time.sleep(30)
-                        checks = github.get_pr_checks(repo, pr_number_ci)
-                        check_list = checks.get("checks", [])
-                        conclusions = [c.get("conclusion") for c in check_list if c.get("conclusion")]
-                        if not conclusions:
-                            continue  # still pending
-                        if all(c in ("success", "skipped", "neutral") for c in conclusions):
-                            print("[SOMA] CI      : all checks passed")
-                            success_result["ci"] = "passed"
+                from core.ci_polling import poll_ci_checks, extract_ci_failure_for_retry, _get_failed_checks
+                from core.tools import run as _run
+
+                pr_number_ci = github.issue_number_from_url(pr.url)
+                ci_attempts = 1
+
+                # Initial CI polling
+                print(f"[SOMA] CI      : Polling initial checks...")
+                ci_result = poll_ci_checks(repo, pr.url, max_retries=5, poll_interval=10)
+
+                if ci_result.success and ci_result.all_checks_passed:
+                    print(f"[SOMA] CI      : All checks passed on first attempt")
+                    success_result["ci_checks_passed"] = True
+                else:
+                    # CI failed: attempt retries (up to 2 retries = 3 total attempts)
+                    ci_attempts = 1
+                    for retry_count in range(2):
+                        if ci_result.success and ci_result.all_checks_passed:
                             break
-                        failing = [c["name"] for c in check_list if c.get("conclusion") == "failure"]
-                        if failing:
-                            print(f"[SOMA] CI      : failed checks: {', '.join(failing)}")
-                            ci_beliefs = (beliefs_ctx +
-                                          f"\nCI failed checks: {', '.join(failing)}. Fix before re-pushing.")
-                            re_edit = execute_edit(task, file_contexts, repo_path, self.llm, model, ci_beliefs)
-                            if re_edit.success:
-                                _sp.run(
-                                    ["git", "push", "--force-with-lease", "origin", branch],
-                                    cwd=repo_path, check=False,
-                                )
-                                print("[SOMA] CI      : pushed fix, re-checking...")
-                                success_result["ci"] = "fixed"
-                            else:
-                                success_result["ci"] = "failed"
+
+                        ci_attempts += 1
+                        print(f"[SOMA] CI Retry: Attempt {ci_attempts}/3")
+
+                        # Extract failure context and build new task
+                        failed_checks = _get_failed_checks(ci_result.final_checks)
+                        failure_prompt = extract_ci_failure_for_retry(repo, pr_number_ci, failed_checks)
+                        retry_task = f"{task}\n\n{failure_prompt}"
+
+                        # Re-run edit with failure context
+                        retry_edit = execute_edit(
+                            task=retry_task,
+                            file_contexts=file_contexts,
+                            repo_path=repo_path,
+                            llm=self.llm,
+                            model=model,
+                            beliefs_context=beliefs_ctx,
+                        )
+
+                        if not retry_edit.success:
+                            print(f"[SOMA] CI Retry: Edit failed on attempt {ci_attempts}, stopping retries")
+                            success_result["ci_checks_passed"] = False
                             break
+
+                        # Git: add, commit, push
+                        add_result = _run(["git", "add", "-A"], cwd=repo_path, timeout=30)
+                        commit_msg = f"fix: CI auto-retry attempt {ci_attempts}"
+                        commit_result = _run(
+                            ["git", "commit", "-m", commit_msg],
+                            cwd=repo_path,
+                            timeout=30
+                        )
+
+                        # Push with force-with-lease
+                        push_result = _run(
+                            ["git", "push", "origin", branch, "--force-with-lease"],
+                            cwd=repo_path,
+                            timeout=60
+                        )
+
+                        if push_result.returncode != 0:
+                            print(f"[SOMA] CI Retry: Push failed on attempt {ci_attempts}, stopping retries")
+                            success_result["ci_checks_passed"] = False
+                            break
+
+                        # Poll CI again
+                        print(f"[SOMA] CI Retry: Polling checks after attempt {ci_attempts}...")
+                        ci_result = poll_ci_checks(repo, pr.url, max_retries=3, poll_interval=10)
+
+                        if ci_result.success and ci_result.all_checks_passed:
+                            print(f"[SOMA] CI Retry: All checks passed on attempt {ci_attempts}")
+                            success_result["ci_checks_passed"] = True
+                            break
+
+                    # After retries exhausted or passed
+                    if not (ci_result.success and ci_result.all_checks_passed):
+                        print(f"[SOMA] CI      : Failed after {ci_attempts} attempt(s)")
+                        success_result["ci_checks_passed"] = False
+                        self.store.record(
+                            domain="code",
+                            context=issue.title,
+                            action=edit.final_script[:300],
+                            outcome=f"PR created but CI failed after {ci_attempts} attempts",
+                            success=False,
+                            model_used=model,
+                            notes=json.dumps({"ci_attempts": ci_attempts}),
+                        )
                     else:
-                        print("[SOMA] CI      : timed out waiting for checks")
-                        success_result["ci"] = "timeout"
-                except Exception as _e:
-                    success_result["ci_error"] = str(_e)
+                        success_result["ci_checks_passed"] = True
+                        self.store.record(
+                            domain="code",
+                            context=issue.title,
+                            action=edit.final_script[:300],
+                            outcome=f"CI fixed via auto-retry (attempt {ci_attempts})",
+                            success=True,
+                            model_used=model,
+                            notes=json.dumps({"ci_retry_attempt": ci_attempts}),
+                        )
 
             _ctraj.finish(success=success_result.get("success", False))
             return success_result

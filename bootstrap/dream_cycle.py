@@ -22,8 +22,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from config import TIER_2_MODEL, TIER_3_MODEL
+from config import TIER_1_MODEL, TIER_2_MODEL, TIER_3_MODEL
 from core.belief import BeliefStore
+from core.belief_index import BeliefIndex
 from core.experience import ExperienceStore
 from core.brain import BrainStore
 from core.llm import LLMClient
@@ -33,7 +34,7 @@ from core.pr_monitor import PRRegistry
 from core.identity import IdentityStore
 from core.introspection import IntrospectionEngine
 from core.goals import GoalStore
-from comms.protocol.session_memory import SessionMemory
+# from comms.protocol.session_memory import SessionMemory  # TODO: stub this module
 
 
 def run(verbose: bool = True) -> dict:
@@ -49,12 +50,18 @@ def run(verbose: bool = True) -> dict:
         "experiences_pruned": 0,
         "low_conf_tested": 0,
         "introspection_updated": False,
+        "cross_domain_contradictions": 0,
+        "cross_domain_patterns_synthesized": 0,
+        "cross_domain_beliefs_crystallized": 0,
     }
 
     llm = LLMClient()
     brain = BrainStore()
     store = ExperienceStore()
-    session_memory = SessionMemory()
+    # session_memory = SessionMemory()  # TODO: implement comms.protocol.session_memory
+
+    # --- Step 3: Skip session consolidation (requires SessionMemory) ---
+    # Skipped for now due to missing comms.protocol module
 
     # --- Step 6: Introspection ---
     if verbose:
@@ -84,7 +91,6 @@ def run(verbose: bool = True) -> dict:
         print("\n[Dream] Step 7: Validating skill files")
     try:
         from core.failure_analyzer import SkillStore
-        from datetime import datetime
 
         skill_store = SkillStore()
         skills = skill_store.all_skills()
@@ -94,8 +100,6 @@ def run(verbose: bool = True) -> dict:
             try:
                 content = skill_path.read_text()
                 # Update last_validated timestamp
-                from datetime import datetime
-
                 now = datetime.utcnow().isoformat()
                 if "Last Validated:" in content:
                     content = content.replace("Last Validated: ", f"Last Validated: {now}")
@@ -167,44 +171,9 @@ def run(verbose: bool = True) -> dict:
                 print(f"[Dream]   Synthesis failed for {repo}: {e}")
 
     # --- Step 3: Consolidate old session memories ---
+    # Skipped: SessionMemory module not available (comms.protocol not implemented)
     if verbose:
-        print("\n[Dream] Step 3: Consolidating session memories")
-
-    recent_sessions = session_memory.read_recent(7)
-    if len(recent_sessions) >= 5:
-        try:
-            summary_lines = []
-            for s in recent_sessions:
-                ts = s.get("timestamp", "")[:10]
-                updates = len(s.get("pr_updates", []))
-                na = s.get("next_action")
-                action_str = (
-                    f"{na.get('type')} {na.get('repo', '')}#{na.get('issue', '')}" if na else "none"
-                )
-                summary_lines.append(f"[{ts}] {updates} PR updates, next={action_str}")
-
-            summary_prompt = f"""Summarize these {len(recent_sessions)} SOMA work sessions into a concise 3-5 sentence paragraph capturing: what was accomplished, what patterns emerged, what is still pending.
-
-Sessions:
-{chr(10).join(summary_lines)}
-
-Write the summary directly."""
-
-            consolidated = llm.ask(TIER_2_MODEL, summary_prompt)
-            # Write consolidated summary as a brain timeline entry
-            brain.add_timeline(
-                slug="soma-session-history",
-                entity_type="pattern",
-                entity_name="SOMA session history",
-                event=f"Weekly consolidation: {consolidated[:300]}",
-                impact="neutral",
-            )
-            report["sessions_consolidated"] = len(recent_sessions)
-            if verbose:
-                print(f"[Dream]   Consolidated {len(recent_sessions)} sessions")
-        except Exception as e:
-            if verbose:
-                print(f"[Dream]   Consolidation failed: {e}")
+        print("\n[Dream] Step 3: Session consolidation skipped (SessionMemory unavailable)")
 
     # --- Step 4: Prune old low-value experiences ---
     if verbose:
@@ -304,6 +273,51 @@ Write the summary directly."""
         if verbose:
             print(f"[Dream]   Step 7 failed: {e}")
 
+    # --- Step 7b: Cross-domain belief crystallization via BeliefIndex ---
+    if verbose:
+        print("\n[Dream] Step 7b: Cross-domain belief crystallization")
+    try:
+        # 1. Instantiate BeliefIndex to load all domain beliefs
+        index = BeliefIndex()
+        index_summary = index.summary()
+        if verbose:
+            print(f"[Dream]   Indexed {index_summary['total']} belief(s) across {len(index_summary['by_domain'])} domain(s)")
+
+        # 2. Detect contradictions across domain boundaries
+        contradictions = index.detect_contradictions(min_overlap=0.35)
+        report["cross_domain_contradictions"] = len(contradictions)
+        if verbose and contradictions:
+            print(f"[Dream]   Found {len(contradictions)} cross-domain contradiction(s)")
+            for c in contradictions[:3]:  # Log top 3
+                print(
+                    f"[Dream]     - {c.domain_a}/{c.belief_a_id[:8]}: {c.belief_a[:50]}"
+                )
+                print(
+                    f"[Dream]     - {c.domain_b}/{c.belief_b_id[:8]}: {c.belief_b[:50]} (overlap: {c.overlap_score:.1%})"
+                )
+
+        # 3. Synthesize cross-domain patterns from high-confidence beliefs
+        patterns = index.synthesize_patterns(llm, TIER_2_MODEL)
+        report["cross_domain_patterns_synthesized"] = len(patterns)
+        if verbose and patterns:
+            print(f"[Dream]   Synthesized {len(patterns)} cross-domain pattern(s)")
+            for p in patterns:
+                print(
+                    f"[Dream]     - [{', '.join(p.domains)}] {p.pattern[:60]} (support: {p.support_count}, conf: {p.confidence:.0%})"
+                )
+
+        # 4. Crystallize patterns into self-domain beliefs
+        new_beliefs = index.write_to_self(patterns)
+        report["cross_domain_beliefs_crystallized"] = len(new_beliefs)
+        if verbose and new_beliefs:
+            print(f"[Dream]   Crystallized {len(new_beliefs)} new self-domain belief(s)")
+            for b in new_beliefs:
+                print(f"[Dream]     - {b.statement[:70]} (conf: {b.confidence:.0%})")
+
+    except Exception as e:
+        if verbose:
+            print(f"[Dream]   Step 7b (cross-domain synthesis) failed: {e}")
+
     # --- Step 8: Harness introspection + self-modification ---
     if verbose:
         print("\n[Dream] Step 8: Harness introspection + self-modification")
@@ -323,14 +337,15 @@ Write the summary directly."""
             print(f"[Dream]   Safety: {analysis['safety_assessment']}")
         report["harness_analysis_safe"] = analysis["safety_assessment"] == "safe"
         if analysis["safety_assessment"] == "safe" and analysis.get("suggested_improvements"):
-            modifier = SelfModifier(Path(__file__).parent.parent, llm, TIER_3_MODEL)
+            modifier = SelfModifier(Path(__file__).parent.parent, llm, TIER_1_MODEL)
             results = modifier.run_improvement_cycle(analysis)
             applied = [r for r in results if r.success]
             report["harness_improvements"] = len(applied)
             if verbose:
                 for r in results:
                     status = "APPLIED" if r.success else "FAILED"
-                    print(f"[Dream]   {r.proposal.component}: {status}")
+                    component = r.proposal.component if r.proposal else "unknown"
+                    print(f"[Dream]   {component}: {status}")
         elif verbose:
             print(f"[Dream]   Skipping modifications: safety={analysis['safety_assessment']}")
     except Exception as e:
@@ -347,6 +362,9 @@ Write the summary directly."""
         print(f"[Dream]   Low-conf beliefs tested: {report['low_conf_tested']}")
         print(f"[Dream]   New trajectories: {report['trajectories_collected']}")
         print(f"[Dream]   Fine-tune triggered: {report['finetune_triggered']}")
+        print(f"[Dream]   Cross-domain contradictions: {report['cross_domain_contradictions']}")
+        print(f"[Dream]   Cross-domain patterns: {report['cross_domain_patterns_synthesized']}")
+        print(f"[Dream]   Cross-domain beliefs crystallized: {report['cross_domain_beliefs_crystallized']}")
         print(f"[Dream]   Harness improvements: {report.get('harness_improvements', 0)}")
         print("=" * 55 + "\n")
 

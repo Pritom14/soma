@@ -13,7 +13,9 @@ from core.tools import run_python, RunResult
 from core.llm import LLMClient
 from core.tool_registry import ToolRegistry
 from core.snapshot import take_snapshot, restore_snapshot
-from core.failure_analyzer import classify_failure
+from core.failure_analyzer import classify_failure, FailureAnalyzer, FailureAnalysis
+from core.experience import FailureClass
+from core.atomic_executor import AtomicExecutor
 
 MAX_ITERATIONS = 5
 
@@ -51,6 +53,7 @@ class EditResult:
     output: str
     error: str = ""
     files_changed: list[str] = field(default_factory=list)
+    failure_class: str = FailureClass.NONE  # populated on failure for ExperienceStore
 
 
 def execute_edit(
@@ -71,28 +74,73 @@ def execute_edit(
     history = []  # (script, result) pairs for self-correction context
     tools_ctx = tool_registry.to_prompt_context() if tool_registry else ""
     snapshot = take_snapshot(list(file_contexts.keys()))
+    _analyzer = FailureAnalyzer()
+    _last_analysis: FailureAnalysis | None = None
+    _atomic = AtomicExecutor()
+
+    # Build system prompt with tool discovery
+    system_prompt = _build_system_prompt(tool_registry)
 
     for iteration in range(1, MAX_ITERATIONS + 1):
         prompt = _build_prompt(task, file_contexts, history, beliefs_context, repo, tools_ctx)
-        script = llm.ask(model, prompt, system=_SYSTEM)
+        script = llm.ask(model, prompt, system=system_prompt)
 
         # Strip markdown fences if model wraps in ```python
         script = _clean_script(script)
 
         pre_run_files = set(file_contexts.keys())
-        result = run_python(script, cwd=repo, timeout=30)
+        # Wrap script execution atomically: snapshot all touched files before
+        # running, restore on any exception so no file is left partially edited.
+        _file_list = list(file_contexts.keys())
+        _run_holder: list[RunResult] = []
+
+        def _atomic_edit_fn() -> None:
+            r = run_python(script, cwd=repo, timeout=30)
+            _run_holder.append(r)
+            # Propagate run failures as exceptions so the atomic wrapper rolls back
+            if not r.success:
+                raise RuntimeError(r.stderr or r.output or "run_python returned failure")
+
+        _guard_paths = _file_list if len(_file_list) <= 3 else _file_list[:3]
+        _atomic_result = _atomic.execute_atomic(_atomic_edit_fn, _guard_paths)
+
+        if _atomic_result.restored:
+            # AtomicExecutor rolled back — the run itself raised an exception.
+            # Build a RunResult from whatever partial output was captured.
+            _rollback_err = (
+                f"[atomic_executor] Rollback triggered: {_atomic_result.error}\n"
+                "All snapshotted files restored to pre-edit state."
+            )
+            if _run_holder:
+                result = _run_holder[0]
+            else:
+                result = RunResult(returncode=1, stdout="", stderr=_rollback_err)
+            _last_analysis = _analyzer.analyze(_rollback_err, script)
+            if _last_analysis is not None:
+                _last_analysis.failure_class = FailureClass.EDIT_SYNTAX_ERROR
+            history.append((script, result))
+            if iteration == MAX_ITERATIONS:
+                break
+            continue
+
+        # Successful atomic execution — unwrap the captured RunResult.
+        result = _run_holder[0] if _run_holder else RunResult(
+            returncode=1, stdout="", stderr="[atomic_executor] no run result captured"
+        )
         history.append((script, result))
 
         if result.success:
             # Enforce SUCCESS marker — silent failures must be caught
             if "SUCCESS" not in result.stdout:
+                _err = "[executor] No SUCCESS marker — edit may not have applied"
+                _last_analysis = _analyzer.analyze(_err, script)
                 history.append(
                     (
                         script,
                         RunResult(
                             returncode=1,
                             stdout=result.stdout,
-                            stderr="[executor] No SUCCESS marker — edit may not have applied",
+                            stderr=_err,
                         ),
                     )
                 )
@@ -106,6 +154,8 @@ def execute_edit(
                 for _f in changed:
                     if _f not in pre_run_files and Path(_f).exists():
                         Path(_f).unlink()
+                _err = "Maker-checker validation failed:\n" + "\n".join(check_errors)
+                _last_analysis = _analyzer.analyze(_err, script)
                 if iteration == MAX_ITERATIONS:
                     return EditResult(
                         success=False,
@@ -114,13 +164,14 @@ def execute_edit(
                         output=result.output,
                         error="Maker-checker failed on final iteration:\n"
                         + "\n".join(check_errors),
+                        failure_class=_last_analysis.failure_class,
                     )
                 history[-1] = (
                     script,
                     RunResult(
                         returncode=1,
                         stdout=result.stdout,
-                        stderr="Maker-checker validation failed:\n" + "\n".join(check_errors),
+                        stderr=_err,
                     ),
                 )
                 continue
@@ -132,12 +183,14 @@ def execute_edit(
                     test_result = test_tool.run(cwd=repo)
                     if not test_result.success:
                         restore_snapshot(snapshot)
+                        _err = f"Tests failed:\n{test_result.output}"
+                        _last_analysis = _analyzer.analyze(_err, script)
                         history[-1] = (
                             script,
                             RunResult(
                                 success=False,
                                 output=test_result.output,
-                                stderr=f"Tests failed:\n{test_result.output}",
+                                stderr=_err,
                                 returncode=1,
                             ),
                         )
@@ -151,18 +204,25 @@ def execute_edit(
                 files_changed=changed,
             )
 
+        # Script execution itself failed — classify and record for next iteration
+        _err = result.stderr if hasattr(result, "stderr") else result.output
+        _last_analysis = _analyzer.analyze(_err, script)
+
         if iteration == MAX_ITERATIONS:
             break
 
-        # Self-correction: loop continues with error context
+        # Self-correction: loop continues with error context and recovery prompt injected
+        # via _build_prompt which reads history[-1] and classify_failure
 
     restore_snapshot(snapshot)
+    _fc = _last_analysis.failure_class if _last_analysis else FailureClass.NONE
     return EditResult(
         success=False,
         iterations=MAX_ITERATIONS,
         final_script=history[-1][0] if history else "",
         output=history[-1][1].output if history else "",
         error=f"Failed after {MAX_ITERATIONS} iterations. Last error:\n{history[-1][1].stderr if history else ''}",
+        failure_class=_fc,
     )
 
 
@@ -252,15 +312,21 @@ def _build_prompt(
 
     if history:
         last_script, last_result = history[-1]
+        last_err = last_result.stderr if hasattr(last_result, "stderr") else ""
+        # Structured recovery prompt from FailureAnalyzer (higher signal than raw error dump)
+        _fa = FailureAnalyzer()
+        _analysis = _fa.analyze(last_err, last_script)
+        recovery_block = _fa.recovery_prompt(_analysis)
         lines += [
+            recovery_block,
             "Previous attempt failed. Script:",
             "```python",
             last_script,
             "```",
             f"Error output:\n{last_result.tail(20)}",
-            f"Failure diagnosis: {classify_failure(last_script, last_result.stderr if hasattr(last_result, 'stderr') else '', task).recovery_hint}",
+            f"Legacy hint: {classify_failure(last_script, last_err, task).recovery_hint}",
             "",
-            "Fix the script based on the error above.",
+            "Fix the script based on the recovery instructions above.",
         ]
 
     return "\n".join(lines)
@@ -336,6 +402,36 @@ def _clean_script(raw: str) -> str:
         if raw.startswith("python"):
             raw = raw[6:]
     return raw.strip()
+
+
+def _build_system_prompt(tool_registry: ToolRegistry = None) -> str:
+    """
+    Build system prompt with optional tool discovery.
+    If tool_registry is provided, inject discovered tools into the prompt.
+    """
+    base_system = """You are a precise code editing agent.
+You write Python scripts that make targeted edits to files.
+Your scripts must be correct Python that runs without errors.
+Never use external libraries beyond Python stdlib.
+Always print SUCCESS at the end if the edit succeeds."""
+
+    if not tool_registry:
+        return base_system
+
+    # Inject discovered tools into system prompt
+    try:
+        tools = list(tool_registry._tools.values())
+        if tools:
+            tools_list = "\n".join(
+                f"  - {tool.name}: {tool.description}"
+                for tool in tools
+            )
+            tool_section = f"\nAvailable tools in this repo:\n{tools_list}"
+            return base_system + tool_section
+    except Exception:
+        pass
+
+    return base_system
 
 
 _SYSTEM = """You are a precise code editing agent.

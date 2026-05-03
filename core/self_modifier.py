@@ -113,8 +113,10 @@ class SelfModifier:
         if proposal.proposed_value == proposal.current_value:
             errors.append("proposed_value is identical to current_value")
 
-        # If target is Python code, try to parse it
-        if proposal.target_name in ["classify_failure"]:
+        # Only validate Python syntax for targets that contain actual code,
+        # not prose strings like _SYSTEM, CRITICAL_RULES, _PLANNER_SYSTEM.
+        PYTHON_CODE_TARGETS = {"classify_failure"}
+        if proposal.target_name in PYTHON_CODE_TARGETS:
             try:
                 ast.parse(proposal.proposed_value)
             except SyntaxError as e:

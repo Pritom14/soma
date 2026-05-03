@@ -11,6 +11,17 @@ from typing import Optional
 from config import DB_PATH, EXPERIENCES_DIR, EMBED_MODEL
 
 
+class FailureClass:
+    LOCALIZATION_MISS = "LOCALIZATION_MISS"   # wrong file identified
+    EDIT_SYNTAX_ERROR = "EDIT_SYNTAX_ERROR"   # generated code has syntax errors
+    VERIFY_BUILD_FAIL = "VERIFY_BUILD_FAIL"   # build/compile failed after edit
+    VERIFY_TEST_FAIL  = "VERIFY_TEST_FAIL"    # tests failed after edit
+    CI_FAIL           = "CI_FAIL"             # CI checks failed on PR
+    LLM_HALLUCINATION = "LLM_HALLUCINATION"   # model returned non-actionable output
+    PUSH_FAIL         = "PUSH_FAIL"           # git push/PR creation failed
+    NONE              = ""                    # success or unclassified
+
+
 @dataclass
 class Experience:
     id: str
@@ -79,6 +90,12 @@ class ExperienceStore:
             "CREATE INDEX IF NOT EXISTS idx_context_hash ON experiences(context_hash)"
         )
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_domain ON experiences(domain)")
+        # Migration: add failure_class column if not already present
+        try:
+            self.conn.execute("ALTER TABLE experiences ADD COLUMN failure_class TEXT DEFAULT ''")
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
         self.conn.commit()
 
     # ------------------------------------------------------------------
@@ -138,6 +155,7 @@ class ExperienceStore:
         success: bool,
         model_used: str,
         notes: str = "",
+        failure_class: str = "",
     ) -> "Experience":
         now = datetime.utcnow().isoformat()
         context_hash = Experience.make_hash(context)
@@ -192,7 +210,7 @@ class ExperienceStore:
             notes=notes,
         )
         self.conn.execute(
-            "INSERT INTO experiences VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO experiences VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 exp.id,
                 exp.domain,
@@ -208,6 +226,7 @@ class ExperienceStore:
                 exp.last_verified,
                 exp.decay_rate,
                 exp.notes,
+                failure_class,
             ),
         )
         self.conn.commit()
@@ -319,7 +338,30 @@ class ExperienceStore:
             "embedded": embedded,
         }
 
+    def prune_old(self, cutoff_date: str, max_confidence: float = 0.3) -> int:
+        """Delete experiences older than cutoff_date with confidence below max_confidence."""
+        result = self.conn.execute(
+            "DELETE FROM experiences WHERE created_at < ? AND confidence < ?",
+            (cutoff_date, max_confidence),
+        )
+        self.conn.commit()
+        return result.rowcount
+
+    def failure_stats(self) -> dict:
+        """Return counts of each failure class across all failed experiences."""
+        rows = self.conn.execute(
+            """SELECT failure_class, COUNT(*) as cnt
+               FROM experiences
+               WHERE success=0 AND failure_class != ''
+               GROUP BY failure_class
+               ORDER BY cnt DESC"""
+        ).fetchall()
+        return {row["failure_class"]: row["cnt"] for row in rows}
+
     def _row_to_exp(self, row) -> "Experience":
         d = dict(row)
         d["success"] = bool(d["success"])
+        # Drop columns not in the Experience dataclass (e.g. failure_class added by migration)
+        exp_fields = {f.name for f in Experience.__dataclass_fields__.values()}
+        d = {k: v for k, v in d.items() if k in exp_fields}
         return Experience(**d)

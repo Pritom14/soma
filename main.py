@@ -66,6 +66,8 @@ Examples:
                         help="Test the confidence gate for a given task description")
     parser.add_argument("--use-claude", metavar="PROMPT",
                         help="Break-glass: invoke Claude directly on a prompt")
+    parser.add_argument("--dream-cycle", action="store_true",
+                        help="Run the dream cycle: consolidate experiences, introspect patterns, self-modify harness")
     parser.add_argument("--pending", action="store_true",
                         help="Show pending decisions waiting for your input")
     parser.add_argument("--plan-pr", metavar="REPO/NUMBER",
@@ -249,6 +251,12 @@ Examples:
         result = invoker.invoke(args.use_claude, reason="explicit user request via --use-claude")
         if result:
             print(result)
+        return
+
+    if args.dream_cycle:
+        import json
+        report = soma.dream_cycle(verbose=verbose)
+        print(json.dumps(report, indent=2, default=str))
         return
 
     if args.contribute:
