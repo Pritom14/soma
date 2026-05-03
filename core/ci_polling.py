@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 from core import github
-from core.tools import RunResult
 
 
 @dataclass
@@ -179,7 +178,7 @@ def poll_ci_checks(
         # Exit loop early if all checks have concluded
         if not pending:
             failed_checks = failed
-            print(f"[SOMA] CI Checks concluded (no pending)")
+            print("[SOMA] CI Checks concluded (no pending)")
             break
 
         # If this is not the last attempt, sleep before polling again

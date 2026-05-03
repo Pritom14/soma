@@ -1,6 +1,6 @@
 # SOMA
 
-A self-improving autonomous developer agent that learns from experience, classifies its failures, and improves its own reasoning pipeline.
+A self-improving autonomous developer agent that learns from experience, classifies its failures, decomposes complex tasks, and improves its own reasoning pipeline.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-brightgreen)](https://www.python.org)
@@ -19,6 +19,9 @@ ollama pull qwen2.5-coder:14b
 # Run a simple task
 python main.py --build "Write hello world in Python"
 
+# Contribute to a GitHub issue
+python main.py --contribute "https://github.com/org/repo/issues/123"
+
 # Run the dream cycle (introspection + self-improvement)
 python main.py --dream-cycle
 ```
@@ -27,30 +30,49 @@ python main.py --dream-cycle
 
 SOMA is an autonomous agent that executes tasks by writing and running code. Unlike traditional AI assistants, SOMA:
 
-- **Learns from failure** — Every task failure is recorded with root-cause classification (syntax error, missing import, logic bug, etc.)
-- **Introspects** — Periodically runs a dream cycle that detects patterns in failures and generates meta-beliefs about its own weaknesses
-- **Self-improves** — Proposes targeted edits to its own executor, planner, and failure analyzer based on failure patterns
-- **Maintains identity** — Persists a soul.json with self-model (purpose, capabilities, limitations) that gets rewritten from evidence
+- **Learns from failure** — Every failure is classified into 8 types with targeted recovery instructions injected into the next iteration
+- **Decomposes complexity** — Scores task complexity before execution, recursively decomposes oversized tasks, analyzes sub-task dependencies
+- **Recovers atomically** — Snapshots target files before any edit, restores automatically on corruption or failure
+- **Introspects** — Runs a dream cycle that detects patterns in failures, synthesizes cross-domain beliefs, and generates meta-beliefs about its own weaknesses
+- **Self-improves** — Proposes targeted edits to its own executor, planner, and failure analyzer with 10 safety gates
+- **Contributes to OSS** — Explores repos proactively, creates PRs, polls CI checks, and auto-retries on CI failure
 
 ## Architecture
 
+### Core Modules
+
 | Component | Purpose |
 |-----------|---------|
-| `core/executor.py` | CodeAct loop: LLM → Python script → execute → self-correct |
-| `core/planner.py` | Decompose tasks into plans with dependency analysis |
+| `core/executor.py` | CodeAct loop: LLM → Python script → execute → self-correct (up to 5 iterations) |
+| `core/atomic_executor.py` | Snapshot-before-edit, rollback-on-failure wrapper for all edits |
+| `core/planner.py` | Recursive task decomposer with sequencing hazard detection |
+| `core/task_complexity.py` | Pre-CodeAct complexity gate — routes to decompose or reject above threshold |
+| `core/dependency_analyzer.py` | DAG-based sub-task dependency analysis with circular dep detection |
+| `core/failure_analyzer.py` | Classify failures into 8 types, inject recovery hints into next prompt |
+| `core/ci_polling.py` | Poll CI checks after PR creation, extract failure context for retry |
 | `core/belief.py` | Belief store with confidence scoring and staleness tracking |
-| `core/failure_analyzer.py` | Classify failures into 6 types for targeted recovery hints |
+| `core/belief_index.py` | Cross-domain belief synthesis — detect contradictions, crystallize patterns |
+| `core/tasks.py` | SQLite-backed task queue with priority and dependency tracking |
+| `core/tool_registry.py` | Auto-discover repo tools (test, lint, build) from pyproject.toml/package.json |
 | `core/self_modifier.py` | Propose, validate, and apply improvements to own code (10 safety gates) |
-| `core/introspection.py` | Self-assessment: detect patterns, form meta-beliefs, update identity |
-| `bootstrap/dream_cycle.py` | 8-step offline consolidation: retest stale beliefs → introspect → self-modify → LoRA fine-tune |
+| `core/introspection.py` | Detect harness failure patterns, form meta-beliefs, update identity |
+| `bootstrap/dream_cycle.py` | 8-step offline consolidation: retest beliefs → introspect → self-modify |
 | `core/trajectory.py` | Record task conversations for LoRA training |
+
+### Agent Layer
+
+| Agent | Purpose |
+|-------|---------|
+| `agents/contribute_agent.py` | Full OSS contribution loop: issue → locate → edit → verify → PR |
+| `agents/pr_manager.py` | PR lifecycle: CI polling, merge decisions, conflict resolution, review requests |
+| `agents/scheduler.py` | Task scheduling, prioritization, deadline tracking, campaign creation |
 
 ## Installation
 
 ### Prerequisites
 - Python 3.11 or later
 - Ollama (for local model serving)
-- Anthropic API key
+- Anthropic API key (for Tier 1 tasks and self-modification)
 
 ### Setup
 
@@ -60,8 +82,9 @@ git clone https://github.com/Pritom14/soma.git
 cd soma
 pip install -e .
 
-# Pull a model for local code execution
-ollama pull qwen2.5-coder:14b
+# Pull models for local code execution
+ollama pull qwen2.5-coder:14b   # Tier 1 — planning, analysis
+ollama pull qwen2.5-coder:7b    # Tier 3 — fast iteration
 
 # Copy config template
 cp config.py.example config.py
@@ -85,12 +108,33 @@ export BASE_MODEL="qwen2.5-coder:14b"
 python main.py --build "Implement a calculator class in Python"
 ```
 
+### Contribute to a GitHub Issue
+```bash
+python main.py --contribute "https://github.com/org/repo/issues/123"
+```
+
+SOMA will:
+1. Explore the repo (README, linting config, source conventions)
+2. Locate relevant files
+3. Plan and execute edits with complexity scoring
+4. Run verification
+5. Create a PR
+6. Poll CI checks — auto-retry with corrective edits if CI fails (up to 3 attempts)
+
 ### Run the Dream Cycle
 ```bash
 python main.py --dream-cycle
 ```
 
-This executes all 8 steps: retest stale beliefs → synthesize brain → consolidate sessions → introspect → self-modify.
+Executes 8 steps:
+1. Retest low-confidence beliefs
+2. Synthesize brain pages from experiences
+3. Consolidate sessions and trajectories
+4. Prune stale experiences
+5. Analyze failure patterns
+6. Form cross-domain beliefs (BeliefIndex)
+7. Update identity from evidence
+8. Propose and apply harness improvements (SelfModifier)
 
 ### Interactive Mode
 ```bash
@@ -99,30 +143,61 @@ python main.py --interactive
 
 ## How Self-Improvement Works
 
-1. **Failure Detection** — Every task failure is classified:
-   - `find_string_mismatch` — File edit couldn't locate the target string
-   - `syntax_error` — Generated code has Python syntax errors
-   - `import_missing` — Missing import statement
-   - `file_not_found` — File path doesn't exist
-   - `oversized_task` — Task too large for single iteration
-   - `sequencing_deadlock` — Definition order violated
+### 1. Failure Classification
 
-2. **Pattern Analysis** — The introspection engine:
-   - Analyzes failure frequency by type
-   - Detects which executor/planner components are struggling
-   - Generates recovery hints (e.g., "read full file content before str.replace")
+Every task failure is classified into one of 8 types:
 
-3. **Self-Modification** — SelfModifier proposes targeted fixes:
-   - Adds error handling to executor
-   - Improves planner task decomposition
-   - Strengthens failure recovery hints
-   - 10 safety gates prevent harmful changes (model gate, snapshot, syntax check, canary test, rollback)
+| Type | Description |
+|------|-------------|
+| `localization_miss` | Find-string not found in target file |
+| `edit_syntax_error` | Generated code has syntax errors |
+| `verify_build_fail` | Build step failed after edit |
+| `verify_test_fail` | Tests failed after edit |
+| `ci_fail` | CI checks failed on PR |
+| `llm_hallucination` | LLM referenced non-existent symbols |
+| `push_fail` | Git push failed |
+| `none` | Success — no failure |
 
-4. **Dream Cycle** — Periodic offline consolidation:
-   - Retest low-confidence beliefs
-   - Synthesize learnings into brain pages
-   - Form meta-beliefs about own weaknesses
-   - Update identity from evidence
+Recovery instructions for each type are prepended to the next CodeAct iteration prompt.
+
+### 2. Task Complexity Scoring
+
+Before executing, SOMA scores task complexity on 0–1 scale:
+
+- `< 0.6` — execute directly
+- `0.6–0.9` — decompose into sub-tasks first
+- `> 0.9` — reject as too risky
+
+Scoring factors: file count, operation count, nesting depth, triple-quotes, refactor/migrate keywords.
+
+### 3. Atomic Execution + Rollback
+
+Every edit is wrapped in a snapshot-restore cycle. If the edit corrupts a file, the original is restored automatically. Prevents the "bricked executor" failure mode.
+
+### 4. Pattern Analysis + Meta-Beliefs
+
+The introspection engine:
+- Queries failure frequency by type from the experience store
+- Detects which harness components are struggling (executor, planner, failure_analyzer)
+- Crystallizes meta-beliefs: e.g., "I fail on triple-quoted strings 4x out of 7"
+- Synthesizes cross-domain beliefs using BeliefIndex
+
+### 5. Self-Modification
+
+SelfModifier proposes targeted fixes to the harness with 10 safety gates:
+
+| Gate | Description |
+|------|-------------|
+| Model gate | Only 14b+ models can modify the harness |
+| Snapshot gate | Full backup before any change |
+| Line-count gate | Max 15-line diffs per modification |
+| Allowlist gate | Only executor, planner, failure_analyzer are editable |
+| Syntax gate | py_compile check after edit |
+| Canary gate | Trivial task test before promoting |
+| Frequency gate | Minimum 3 failure instances before modifying |
+| Dream-cycle gate | Self-modification only during offline dream cycle |
+| Conservative abort | Stop on first gate failure |
+| Version log | All changes logged to harness_versions.json |
 
 ## Development
 
@@ -136,15 +211,12 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
+277 tests covering: executor, failure analyzer, atomic executor, task complexity, planner decomposer, dependency analyzer, CI polling, agent wiring, and end-to-end harness self-modification.
+
 ### Code Style
 ```bash
-ruff check core/
-ruff format core/
-```
-
-### Run Linter
-```bash
-ruff check .
+ruff check core/ bootstrap/
+ruff format core/ bootstrap/
 ```
 
 ## Contributing

@@ -367,7 +367,6 @@ class SkillStore:
     def emit_skill_file(self, pattern: str, failure_type: str, recovery_hint: str) -> str:
         """Write a skill file for a repeated pattern."""
         from datetime import datetime
-        import re
 
         # Slug: lowercase, replace spaces with underscores, limit to 50 chars
         slug = re.sub(r"[^a-z0-9_]", "_", pattern.lower())[:50]

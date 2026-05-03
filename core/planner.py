@@ -9,7 +9,6 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from core.llm import LLMClient
 from core.dependency_analyzer import DependencyAnalyzer
