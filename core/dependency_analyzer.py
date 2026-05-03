@@ -28,9 +28,9 @@ class SubTask:
 @dataclass
 class DependencyGraph:
     tasks: list[SubTask]
-    execution_order: list[str]          # topologically sorted task ids
-    circular_deps: list[tuple]          # (task_a, task_b) pairs forming cycles
-    parallelizable: list[list[str]]     # groups that can run in parallel
+    execution_order: list[str]  # topologically sorted task ids
+    circular_deps: list[tuple]  # (task_a, task_b) pairs forming cycles
+    parallelizable: list[list[str]]  # groups that can run in parallel
     warnings: list[str]
 
 
@@ -160,8 +160,8 @@ class DependencyAnalyzer:
         then C, then D and E concurrently.
         """
         task_map = {t.id: t for t in graph.tasks}
-        adj = self._adjacency(graph.tasks)          # id → [ids it depends on]
-        file_map = self._file_map(graph.tasks)       # task_id → set[files]
+        adj = self._adjacency(graph.tasks)  # id → [ids it depends on]
+        file_map = self._file_map(graph.tasks)  # task_id → set[files]
 
         remaining = set(graph.execution_order)
         completed: set[str] = set()
@@ -170,9 +170,9 @@ class DependencyAnalyzer:
         while remaining:
             # Tasks whose dependencies are all satisfied
             ready = [
-                tid for tid in graph.execution_order
-                if tid in remaining
-                and all(dep in completed for dep in adj.get(tid, []))
+                tid
+                for tid in graph.execution_order
+                if tid in remaining and all(dep in completed for dep in adj.get(tid, []))
             ]
             if not ready:
                 # Safety: avoid infinite loop on residual cycles
@@ -305,7 +305,9 @@ class DependencyAnalyzer:
         for m in re.finditer(r"\b(\w+)\s*\(", text):
             names.append(m.group(1))
         # Also match "call/use/invoke Foo"
-        for m in re.finditer(r"(?:call|use|invoke|instantiate)\s+[`'\"]?(\w+)[`'\"]?", text, re.IGNORECASE):
+        for m in re.finditer(
+            r"(?:call|use|invoke|instantiate)\s+[`'\"]?(\w+)[`'\"]?", text, re.IGNORECASE
+        ):
             names.append(m.group(1))
         return list(set(names))
 
@@ -341,7 +343,9 @@ class DependencyAnalyzer:
     def _extract_files(self, text: str) -> list[str]:
         """Return file paths mentioned in the description."""
         files: list[str] = []
-        for m in re.finditer(r"[\w\-/]+\.(?:py|js|ts|json|yaml|yml|md|txt|cfg|toml|sh|html|css)\b", text):
+        for m in re.finditer(
+            r"[\w\-/]+\.(?:py|js|ts|json|yaml|yml|md|txt|cfg|toml|sh|html|css)\b", text
+        ):
             files.append(m.group(0))
         return list(set(files))
 
@@ -378,9 +382,7 @@ class DependencyAnalyzer:
             result[task.id] = set(self._extract_files(task.description))
         return result
 
-    def _wave_no_file_conflicts(
-        self, ready: list[str], file_map: dict[str, set[str]]
-    ) -> list[str]:
+    def _wave_no_file_conflicts(self, ready: list[str], file_map: dict[str, set[str]]) -> list[str]:
         """
         From the ready list, greedily select a subset that shares no files.
         Tasks excluded from this wave will be picked in the next wave.
@@ -403,7 +405,7 @@ class DependencyAnalyzer:
         Adds a warning for each cycle found.
         """
         task_map = {t.id: t for t in graph.tasks}
-        for (task_a, task_b) in graph.circular_deps:
+        for task_a, task_b in graph.circular_deps:
             msg = f"Circular dependency detected: {task_a} -> {task_b}. Breaking cycle."
             graph.warnings.append(msg)
             ta = task_map.get(task_a)

@@ -281,7 +281,9 @@ def run(verbose: bool = True) -> dict:
         index = BeliefIndex()
         index_summary = index.summary()
         if verbose:
-            print(f"[Dream]   Indexed {index_summary['total']} belief(s) across {len(index_summary['by_domain'])} domain(s)")
+            print(
+                f"[Dream]   Indexed {index_summary['total']} belief(s) across {len(index_summary['by_domain'])} domain(s)"
+            )
 
         # 2. Detect contradictions across domain boundaries
         contradictions = index.detect_contradictions(min_overlap=0.35)
@@ -289,9 +291,7 @@ def run(verbose: bool = True) -> dict:
         if verbose and contradictions:
             print(f"[Dream]   Found {len(contradictions)} cross-domain contradiction(s)")
             for c in contradictions[:3]:  # Log top 3
-                print(
-                    f"[Dream]     - {c.domain_a}/{c.belief_a_id[:8]}: {c.belief_a[:50]}"
-                )
+                print(f"[Dream]     - {c.domain_a}/{c.belief_a_id[:8]}: {c.belief_a[:50]}")
                 print(
                     f"[Dream]     - {c.domain_b}/{c.belief_b_id[:8]}: {c.belief_b[:50]} (overlap: {c.overlap_score:.1%})"
                 )
@@ -364,7 +364,9 @@ def run(verbose: bool = True) -> dict:
         print(f"[Dream]   Fine-tune triggered: {report['finetune_triggered']}")
         print(f"[Dream]   Cross-domain contradictions: {report['cross_domain_contradictions']}")
         print(f"[Dream]   Cross-domain patterns: {report['cross_domain_patterns_synthesized']}")
-        print(f"[Dream]   Cross-domain beliefs crystallized: {report['cross_domain_beliefs_crystallized']}")
+        print(
+            f"[Dream]   Cross-domain beliefs crystallized: {report['cross_domain_beliefs_crystallized']}"
+        )
         print(f"[Dream]   Harness improvements: {report.get('harness_improvements', 0)}")
         print("=" * 55 + "\n")
 

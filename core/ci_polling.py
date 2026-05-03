@@ -5,6 +5,7 @@ After PR creation, polls GitHub checks until all conclude.
 On CI failure: extracts stderr/stdout, creates new CodeAct iteration with CI failure.
 On success or max retries: exits loop and returns result.
 """
+
 from __future__ import annotations
 
 import time
@@ -18,6 +19,7 @@ from core import github
 @dataclass
 class CICheckResult:
     """Result of a single CI check."""
+
     name: str
     state: str
     conclusion: Optional[str]  # "success", "failure", "neutral", "skipped", or None (pending)
@@ -38,6 +40,7 @@ class CICheckResult:
 @dataclass
 class CIPollingResult:
     """Result of CI polling loop."""
+
     success: bool
     all_checks_passed: bool
     final_checks: list[CICheckResult]
@@ -54,7 +57,7 @@ def _extract_pr_number(pr_url: str) -> Optional[int]:
     Returns:
         PR number or None if extraction fails.
     """
-    match = re.search(r'/pull/(\d+)(?:/|$)', pr_url)
+    match = re.search(r"/pull/(\d+)(?:/|$)", pr_url)
     return int(match.group(1)) if match else None
 
 

@@ -124,8 +124,12 @@ def execute_edit(
             continue
 
         # Successful atomic execution — unwrap the captured RunResult.
-        result = _run_holder[0] if _run_holder else RunResult(
-            returncode=1, stdout="", stderr="[atomic_executor] no run result captured"
+        result = (
+            _run_holder[0]
+            if _run_holder
+            else RunResult(
+                returncode=1, stdout="", stderr="[atomic_executor] no run result captured"
+            )
         )
         history.append((script, result))
 
@@ -422,10 +426,7 @@ Always print SUCCESS at the end if the edit succeeds."""
     try:
         tools = list(tool_registry._tools.values())
         if tools:
-            tools_list = "\n".join(
-                f"  - {tool.name}: {tool.description}"
-                for tool in tools
-            )
+            tools_list = "\n".join(f"  - {tool.name}: {tool.description}" for tool in tools)
             tool_section = f"\nAvailable tools in this repo:\n{tools_list}"
             return base_system + tool_section
     except Exception:

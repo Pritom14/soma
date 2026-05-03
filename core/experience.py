@@ -12,14 +12,14 @@ from config import DB_PATH, EXPERIENCES_DIR, EMBED_MODEL
 
 
 class FailureClass:
-    LOCALIZATION_MISS = "LOCALIZATION_MISS"   # wrong file identified
-    EDIT_SYNTAX_ERROR = "EDIT_SYNTAX_ERROR"   # generated code has syntax errors
-    VERIFY_BUILD_FAIL = "VERIFY_BUILD_FAIL"   # build/compile failed after edit
-    VERIFY_TEST_FAIL  = "VERIFY_TEST_FAIL"    # tests failed after edit
-    CI_FAIL           = "CI_FAIL"             # CI checks failed on PR
-    LLM_HALLUCINATION = "LLM_HALLUCINATION"   # model returned non-actionable output
-    PUSH_FAIL         = "PUSH_FAIL"           # git push/PR creation failed
-    NONE              = ""                    # success or unclassified
+    LOCALIZATION_MISS = "LOCALIZATION_MISS"  # wrong file identified
+    EDIT_SYNTAX_ERROR = "EDIT_SYNTAX_ERROR"  # generated code has syntax errors
+    VERIFY_BUILD_FAIL = "VERIFY_BUILD_FAIL"  # build/compile failed after edit
+    VERIFY_TEST_FAIL = "VERIFY_TEST_FAIL"  # tests failed after edit
+    CI_FAIL = "CI_FAIL"  # CI checks failed on PR
+    LLM_HALLUCINATION = "LLM_HALLUCINATION"  # model returned non-actionable output
+    PUSH_FAIL = "PUSH_FAIL"  # git push/PR creation failed
+    NONE = ""  # success or unclassified
 
 
 @dataclass

@@ -95,7 +95,9 @@ class TaskComplexityScorer:
         kw_matches = self._HIGH_COMPLEXITY_KEYWORDS.findall(task)
         if kw_matches:
             raw += 0.15
-            reasons.append(f"high-complexity keyword(s): {', '.join(set(k.lower() for k in kw_matches))}")
+            reasons.append(
+                f"high-complexity keyword(s): {', '.join(set(k.lower() for k in kw_matches))}"
+            )
 
         # Clamp to [0.0, 1.0]
         final_score = min(raw, 1.0)
@@ -153,6 +155,7 @@ class TaskComplexityScorer:
 # ------------------------------------------------------------------
 # Legacy API — kept for backwards compatibility with existing callers
 # ------------------------------------------------------------------
+
 
 def score_task(task: str, file_contexts: dict) -> tuple[int, str]:
     """Legacy integer-scale scorer. Returns (score, reason). Score > 30 means decompose."""

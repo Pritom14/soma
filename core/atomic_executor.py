@@ -77,8 +77,7 @@ class AtomicExecutor:
                 errors.append(f"{snap.file_path}: {exc}")
         if errors:
             raise RuntimeError(
-                "AtomicExecutor.restore() could not write back all snapshots:\n"
-                + "\n".join(errors)
+                "AtomicExecutor.restore() could not write back all snapshots:\n" + "\n".join(errors)
             )
 
     def execute_atomic(

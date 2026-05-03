@@ -228,9 +228,29 @@ _USES_RE = _USES_VERB_RE
 
 # Common English stop-words to skip when extracting names
 _STOP_WORDS = {
-    "the", "and", "with", "for", "from", "into", "that", "this",
-    "its", "new", "all", "any", "each", "also", "then", "when",
-    "file", "step", "code", "data", "value", "class", "function",
+    "the",
+    "and",
+    "with",
+    "for",
+    "from",
+    "into",
+    "that",
+    "this",
+    "its",
+    "new",
+    "all",
+    "any",
+    "each",
+    "also",
+    "then",
+    "when",
+    "file",
+    "step",
+    "code",
+    "data",
+    "value",
+    "class",
+    "function",
 }
 
 
@@ -435,7 +455,7 @@ class RecursivePlanner:
         """
         names: list[str] = []
         for m in verb_re.finditer(step):
-            window = step[m.end(): m.end() + 80]
+            window = step[m.end() : m.end() + 80]
             for word in re.findall(r"\b(\w{3,})\b", window):
                 w = word.lower()
                 if w not in _STOP_WORDS:

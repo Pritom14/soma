@@ -12,14 +12,15 @@ from core.experience import FailureClass
 # New structured interface: FailureAnalysis + FailureAnalyzer
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class FailureAnalysis:
     """Structured result of classifying a single failed CodeAct iteration."""
 
-    failure_class: str          # one of FailureClass constants
-    confidence: float           # 0.0–1.0, how confident we are in the classification
-    root_cause: str             # 1-sentence human-readable diagnosis
-    recovery_instruction: str   # injected into the next CodeAct prompt iteration
+    failure_class: str  # one of FailureClass constants
+    confidence: float  # 0.0–1.0, how confident we are in the classification
+    root_cause: str  # 1-sentence human-readable diagnosis
+    recovery_instruction: str  # injected into the next CodeAct prompt iteration
     context: dict = field(default_factory=dict)  # structured data for logging
 
 
@@ -66,16 +67,29 @@ _RULES: list[tuple[str, float, list[str], str]] = [
     (
         FailureClass.EDIT_SYNTAX_ERROR,
         0.90,
-        ["syntaxerror", "indentationerror", "unexpected token", "unexpected indent",
-         "unexpected eof", "invalid syntax"],
+        [
+            "syntaxerror",
+            "indentationerror",
+            "unexpected token",
+            "unexpected indent",
+            "unexpected eof",
+            "invalid syntax",
+        ],
         "The generated edit script contains a Python syntax or indentation error.",
     ),
     # 2. Build/typecheck — TypeScript-specific tokens before generic "failed"
     (
         FailureClass.VERIFY_BUILD_FAIL,
         0.88,
-        ["typescript error", "tsc:", "build failed", "typecheck", "type error",
-         "compilation error", "cannot find module"],
+        [
+            "typescript error",
+            "tsc:",
+            "build failed",
+            "typecheck",
+            "type error",
+            "compilation error",
+            "cannot find module",
+        ],
         "Build or typecheck failed after the edit was applied.",
     ),
     # 3. LLM hallucination — AttributeError/NameError are specific to runtime
@@ -83,32 +97,51 @@ _RULES: list[tuple[str, float, list[str], str]] = [
     (
         FailureClass.LLM_HALLUCINATION,
         0.87,
-        ["attributeerror", "nameerror", "importerror", "has no attribute",
-         "modulenotfounderror", "is not defined"],
+        [
+            "attributeerror",
+            "nameerror",
+            "importerror",
+            "has no attribute",
+            "modulenotfounderror",
+            "is not defined",
+        ],
         "The model referenced a method, name, or module that does not exist.",
     ),
     # 4. Push failures — very specific git vocabulary
     (
         FailureClass.PUSH_FAIL,
         0.90,
-        ["rejected", "permission denied", "push failed",
-         "non-fast-forward", "remote rejected"],
+        ["rejected", "permission denied", "push failed", "non-fast-forward", "remote rejected"],
         "The git push was rejected due to conflicts or permission issues.",
     ),
     # 5. CI failures — workflow-specific vocabulary
     (
         FailureClass.CI_FAIL,
         0.85,
-        ["github actions", "workflow", "checks failed", "action failed",
-         "pipeline failed", "ci pipeline"],
+        [
+            "github actions",
+            "workflow",
+            "checks failed",
+            "action failed",
+            "pipeline failed",
+            "ci pipeline",
+        ],
         "CI workflow checks failed on the pull request.",
     ),
     # 6. Test failures — require pytest-specific signals or test_ prefix context
     (
         FailureClass.VERIFY_TEST_FAIL,
         0.88,
-        ["pytest", "test_", "1 failed", "tests failed", "assertion failed",
-         "assert response", "assert result", "error in test"],
+        [
+            "pytest",
+            "test_",
+            "1 failed",
+            "tests failed",
+            "assertion failed",
+            "assert response",
+            "assert result",
+            "error in test",
+        ],
         "Tests failed after the edit was applied.",
     ),
     # 7. Localization miss — find_string / replacement string absent in file
@@ -116,9 +149,15 @@ _RULES: list[tuple[str, float, list[str], str]] = [
     (
         FailureClass.LOCALIZATION_MISS,
         0.92,
-        ["find_string not in file", "no match for", "not in content",
-         "not in file content", "string not found in file", "could not find",
-         "old string not found"],
+        [
+            "find_string not in file",
+            "no match for",
+            "not in content",
+            "not in file content",
+            "string not found in file",
+            "could not find",
+            "old string not found",
+        ],
         "The edit find-string was not present in the target file.",
     ),
 ]
@@ -189,8 +228,11 @@ class FailureAnalyzer:
                 confidence=0.75,
                 root_cause="The edit find-string was not present in the target file.",
                 recovery_instruction=_RECOVERY_INSTRUCTIONS[FailureClass.LOCALIZATION_MISS],
-                context={"matched_patterns": ["not found"], "snippet": snippet,
-                         "error_length": len(error_output)},
+                context={
+                    "matched_patterns": ["not found"],
+                    "snippet": snippet,
+                    "error_length": len(error_output),
+                },
             )
 
         return FailureAnalysis(
@@ -234,6 +276,7 @@ class FailureAnalyzer:
 # ---------------------------------------------------------------------------
 # Legacy interface (kept for executor.py backwards compat)
 # ---------------------------------------------------------------------------
+
 
 class FailureType(Enum):
     FIND_STRING_MISMATCH = "find_string_mismatch"
