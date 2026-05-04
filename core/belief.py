@@ -29,12 +29,27 @@ class BeliefStore:
     def _load(self) -> dict:
         if not self.path.exists():
             return {}
-        raw = json.loads(self.path.read_text())
-        return {k: Belief(**v) for k, v in raw.items()}
+        try:
+            raw = json.loads(self.path.read_text())
+            return {k: Belief(**v) for k, v in raw.items()}
+        except (json.JSONDecodeError, TypeError, KeyError):
+            # Corrupted JSON — fall back to empty, leave file intact for inspection
+            return {}
 
     def _save(self):
+        """Atomically persist beliefs to disk: write .tmp then rename."""
         data = {k: asdict(v) for k, v in self.beliefs.items()}
-        self.path.write_text(json.dumps(data, indent=2))
+        tmp_path = self.path.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(data, indent=2))
+        tmp_path.replace(self.path)
+
+    def flush(self):
+        """Explicit flush — useful after batch updates (e.g. dream cycle Step 7b)."""
+        self._save()
+
+    def get_stale(self) -> list["Belief"]:
+        """Return all beliefs that are marked not actionable (stale)."""
+        return [b for b in self.beliefs.values() if not b.is_actionable]
 
     def crystallize(
         self, experience_id: str, statement: str, confidence: float, domain: str

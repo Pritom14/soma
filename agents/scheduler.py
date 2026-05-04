@@ -608,6 +608,183 @@ class SchedulerAgent(BaseAgent):
         return " | ".join(lines) if lines else "Nothing notable this pass."
 
     # ------------------------------------------------------------------
+    # Scheduling — task selection and prioritisation
+    # ------------------------------------------------------------------
+
+    def prioritize_repos(self, repo_list: list[str]) -> list[str]:
+        """
+        Rank repos by SOMA's readiness to contribute: belief confidence,
+        past success rate, and how long since last action on each repo.
+
+        Returns the same list sorted highest-priority first.
+        """
+        from core.belief import BeliefStore
+
+        oss_beliefs = BeliefStore("oss_contribution")
+        scored = []
+        for repo in repo_list:
+            # Belief confidence for this repo
+            relevant = oss_beliefs.get_relevant(repo)
+            avg_conf = (
+                sum(b.confidence for b in relevant) / len(relevant)
+                if relevant else 0.0
+            )
+
+            # Past success rate for this repo
+            all_exps = self.store.all(domain="oss_contribution")
+            repo_exps = [e for e in all_exps if repo in (e.context or "")]
+            if repo_exps:
+                success_rate = sum(1 for e in repo_exps if e.success) / len(repo_exps)
+                recency_bonus = 0.1 if repo_exps else 0.0
+            else:
+                success_rate = 0.5  # neutral default for unvisited repos
+                recency_bonus = 0.2  # prefer unexplored repos as learning opportunities
+
+            score = (avg_conf * 0.5) + (success_rate * 0.3) + recency_bonus
+            scored.append((repo, round(score, 4)))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return [r for r, _ in scored]
+
+    def check_deadlines(self, verbose: bool = True) -> list[dict]:
+        """
+        Surface overdue tasks and push them to the front of the task queue.
+
+        A task is overdue if:
+        - It has been pending for > 48 hours, OR
+        - An open PR in its repo has had no update for > 72 hours
+
+        Returns list of overdue task descriptors.
+        """
+        from datetime import timezone
+        from core.pr_monitor import PRRegistry
+
+        overdue = []
+        now = datetime.utcnow()
+
+        # 1. Check TaskQueue for stale pending tasks
+        pending = self.queue.list(status="pending")
+        for task in pending:
+            try:
+                created = datetime.fromisoformat(task.created_at)
+            except (AttributeError, ValueError, TypeError):
+                continue
+            age_hours = (now - created).total_seconds() / 3600
+            if age_hours > 48:
+                overdue.append({
+                    "type": "stale_task",
+                    "task_id": task.id,
+                    "task_type": task.type,
+                    "repo": task.context.get("repo", ""),
+                    "age_hours": round(age_hours, 1),
+                })
+                # Re-enqueue with escalated priority (bump to 1 = highest)
+                self.queue.update_status(task.id, "pending")
+                try:
+                    self.queue.set_priority(task.id, 1)
+                except Exception:
+                    pass  # set_priority is optional; update_status is enough
+                if verbose:
+                    print(f"[SOMA] Deadline: stale task {task.id[:8]} "
+                          f"({task.type}) age={age_hours:.0f}h — escalated")
+
+        # 2. Check open PRs for stale review activity
+        registry = PRRegistry()
+        open_prs = registry.get_open()
+        for pr in open_prs:
+            if not pr.last_polled:
+                continue
+            try:
+                last = datetime.fromisoformat(pr.last_polled)
+            except (ValueError, TypeError):
+                continue
+            staleness_hours = (now - last).total_seconds() / 3600
+            if staleness_hours > 72:
+                overdue.append({
+                    "type": "stale_pr",
+                    "repo": pr.repo,
+                    "pr_number": pr.pr_number,
+                    "staleness_hours": round(staleness_hours, 1),
+                })
+                if verbose:
+                    print(f"[SOMA] Deadline: stale PR {pr.repo}#{pr.pr_number} "
+                          f"no update in {staleness_hours:.0f}h")
+
+        return overdue
+
+    def select_next_task(self, candidates: list = None, verbose: bool = True):
+        """
+        Choose the highest-value next task when the main TaskQueue is empty.
+
+        Priority order:
+          1. Overdue tasks (surfaced by check_deadlines)
+          2. Scored repo candidates passed in (from repo_tracker.scan)
+          3. Repos ranked by prioritize_repos with no active work
+
+        Returns a dict describing the selected task, or None.
+        """
+        # 1. Surface any overdue items first
+        overdue = self.check_deadlines(verbose=verbose)
+        if overdue:
+            top = overdue[0]
+            if verbose:
+                print(f"[SOMA] Scheduler: selecting overdue item — {top}")
+            return top
+
+        # 2. Use scored candidates if provided
+        if candidates:
+            top = candidates[0]
+            if verbose:
+                print(f"[SOMA] Scheduler: selecting top candidate — "
+                      f"{top.get('repo', '')}#{top.get('number', '')}")
+            return {"type": "contribute", **top}
+
+        # 3. Rank watched repos and pick the best unexplored one
+        all_repos = self.repo_tracker.get_all()
+        if not all_repos:
+            if verbose:
+                print("[SOMA] Scheduler: no watched repos — nothing to select")
+            return None
+
+        ranked = self.prioritize_repos(all_repos)
+        if verbose:
+            print(f"[SOMA] Scheduler: top-ranked repo = {ranked[0] if ranked else 'none'}")
+        return {"type": "explore_repo", "repo": ranked[0]} if ranked else None
+
+    def create_campaign(self, repos: list[str], goal: str = "contribute",
+                        verbose: bool = True) -> list[dict]:
+        """
+        Batch-schedule a campaign across multiple repos.
+
+        For each repo, enqueue a 'contribute' task unless one is already pending.
+        Returns list of task descriptors that were enqueued.
+        """
+        queued = []
+        ranked = self.prioritize_repos(repos)
+
+        for repo in ranked:
+            existing = self.queue.list(status="pending")
+            already_queued = any(
+                t.context.get("repo") == repo and t.type == goal
+                for t in existing
+            )
+            if already_queued:
+                if verbose:
+                    print(f"[SOMA] Campaign: {repo} already in queue — skipping")
+                continue
+
+            task = self.queue.enqueue(
+                type=goal,
+                context={"repo": repo, "campaign": True},
+                priority=3,
+            )
+            queued.append({"task_id": task.id, "repo": repo, "type": goal})
+            if verbose:
+                print(f"[SOMA] Campaign: enqueued {goal} for {repo} (task={task.id[:8]})")
+
+        return queued
+
+    # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
 

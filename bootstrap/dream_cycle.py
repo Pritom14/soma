@@ -170,10 +170,43 @@ def run(verbose: bool = True) -> dict:
             if verbose:
                 print(f"[Dream]   Synthesis failed for {repo}: {e}")
 
-    # --- Step 3: Consolidate old session memories ---
-    # Skipped: SessionMemory module not available (comms.protocol not implemented)
+    # --- Step 3: Consolidate old session memories + LoRA dataset prep ---
+    # Session consolidation is skipped (comms.protocol not implemented).
+    # Instead, Step 3 now runs LoRA fine-tune dataset preparation via FineTuner.
     if verbose:
-        print("\n[Dream] Step 3: Session consolidation skipped (SessionMemory unavailable)")
+        print("\n[Dream] Step 3: Session consolidation + LoRA fine-tune prep")
+    report["finetune_examples_prepared"] = 0
+    try:
+        from core.finetuner import FineTuner
+        from datetime import datetime as _dt2
+
+        finetuner = FineTuner()
+        if not finetuner.should_finetune():
+            if verbose:
+                print("[Dream]   Step 3: Insufficient new trajectories — skipping fine-tune prep")
+        else:
+            examples = finetuner.prepare_dataset()
+            if examples is None:
+                if verbose:
+                    print(
+                        "[Dream]   Step 3: prepare_dataset() returned None (< 10 successful trajectories)"
+                    )
+            else:
+                _ts = _dt2.utcnow().strftime("%Y%m%d_%H%M%S")
+                _out_dir = Path(__file__).parent.parent / "training_data"
+                _out_path = _out_dir / f"soma_finetune_{_ts}.jsonl"
+                finetuner.export_dataset(examples, _out_path)
+                run_id = finetuner.generate_run_id()
+                finetuner.record_finetune(run_id, len(examples))
+                report["finetune_examples_prepared"] = len(examples)
+                if verbose:
+                    print(
+                        f"[Dream]   Step 3: Prepared {len(examples)} fine-tune example(s)"
+                        f" → {_out_path.name}"
+                    )
+    except Exception as e:
+        if verbose:
+            print(f"[Dream]   Step 3: Fine-tune prep failed (non-fatal): {e}")
 
     # --- Step 4: Prune old low-value experiences ---
     if verbose:
@@ -314,6 +347,13 @@ def run(verbose: bool = True) -> dict:
             for b in new_beliefs:
                 print(f"[Dream]     - {b.statement[:70]} (conf: {b.confidence:.0%})")
 
+        # 5. Flush all domain BeliefStores to disk after cross-domain synthesis
+        for _domain in ["code", "research", "task", "self", "oss_contribution"]:
+            try:
+                BeliefStore(_domain).flush()
+            except Exception:
+                pass
+
     except Exception as e:
         if verbose:
             print(f"[Dream]   Step 7b (cross-domain synthesis) failed: {e}")
@@ -361,6 +401,9 @@ def run(verbose: bool = True) -> dict:
         print(f"[Dream]   Experiences pruned: {report['experiences_pruned']}")
         print(f"[Dream]   Low-conf beliefs tested: {report['low_conf_tested']}")
         print(f"[Dream]   New trajectories: {report['trajectories_collected']}")
+        print(
+            f"[Dream]   Fine-tune examples prepared: {report.get('finetune_examples_prepared', 0)}"
+        )
         print(f"[Dream]   Fine-tune triggered: {report['finetune_triggered']}")
         print(f"[Dream]   Cross-domain contradictions: {report['cross_domain_contradictions']}")
         print(f"[Dream]   Cross-domain patterns: {report['cross_domain_patterns_synthesized']}")

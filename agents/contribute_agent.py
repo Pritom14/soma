@@ -20,7 +20,8 @@ from agents.base import BaseAgent
 
 class ContributeAgent(BaseAgent):
     def __init__(self, domain: str = ACTIVE_DOMAIN, store: ExperienceStore = None,
-                 explored_repos: dict = None, self_test_fn = None):
+                 explored_repos: dict = None, self_test_fn = None,
+                 pr_manager=None):
         """
         Initialize ContributeAgent with optional SOMA context.
 
@@ -29,10 +30,13 @@ class ContributeAgent(BaseAgent):
             store: Shared experience store
             explored_repos: Dict tracking {repo: ExplorationResult} for session
             self_test_fn: Callable(limit, trigger) → list, for running pre-contribution self-tests
+            pr_manager: Optional PRManagerAgent — if provided, monitor_review() and
+                        handle_merge_decision() are called after CI completes
         """
         super().__init__(domain=domain, store=store)
         self.explored_repos = explored_repos if explored_repos is not None else {}
         self.self_test_fn = self_test_fn
+        self.pr_manager = pr_manager  # wired in by orchestrator; None = no review monitoring
 
     def build_local(self, task: str, repo_path: str, files: list[str] = None,
                     verbose: bool = True) -> dict:
@@ -564,6 +568,31 @@ Return ONLY the JSON array."""
                             model_used=model,
                             notes=json.dumps({"ci_retry_attempt": ci_attempts}),
                         )
+
+            # 14. Review monitoring — non-blocking: wire PRManagerAgent if available
+            # Called after CI polling completes so pr_number is already known.
+            if pr.success and self.pr_manager is not None:
+                try:
+                    review_state = self.pr_manager.monitor_review(
+                        repo, pr_number_ci, verbose=False
+                    )
+                    success_result["review_state"] = {
+                        "pr_state": review_state.get("pr_state"),
+                        "review_decision": review_state.get("review_decision"),
+                        "open_items": len(review_state.get("open_items", [])),
+                        "needs_attention": review_state.get("needs_attention", False),
+                    }
+                    # If the review already has changes requested, kick off merge decision
+                    if review_state.get("needs_attention"):
+                        merge_result = self.pr_manager.handle_merge_decision(
+                            repo, pr_number_ci,
+                            mergeable=success_result.get("ci_checks_passed", False),
+                            verbose=False,
+                        )
+                        success_result["merge_decision"] = merge_result.get("status")
+                except Exception as _review_err:
+                    # Review monitoring is best-effort; never fail the contribution
+                    success_result["review_state"] = {"error": str(_review_err)}
 
             _ctraj.finish(success=success_result.get("success", False))
             return success_result

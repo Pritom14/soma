@@ -14,6 +14,7 @@ from core.tools import run as _run, read_file
 from core.executor import execute_edit
 from core.tool_registry import ToolRegistry
 from core.verifier import verify, detect_stack
+from core.ci_polling import poll_ci_checks
 from agents.base import BaseAgent
 
 
@@ -1169,6 +1170,249 @@ class PRManagerAgent(BaseAgent):
             updates.append({"branch": branch, "merged": merged, "ci_passed": ci_passed})
 
         return updates
+
+    # ------------------------------------------------------------------
+    # Review monitoring and merge decisions
+    # ------------------------------------------------------------------
+
+    def poll_ci_status(self, repo: str, pr_number: int) -> dict:
+        """
+        Check the current CI state of a PR without blocking.
+
+        Returns a dict with keys: state ("pending"|"passed"|"failed"|"unknown"),
+        all_passed (bool), checks (list).
+        """
+        pr_url = f"https://github.com/{repo}/pull/{pr_number}"
+        try:
+            result = poll_ci_checks(repo, pr_url, max_retries=1, poll_interval=0)
+            return {
+                "state": "passed" if result.all_checks_passed else
+                         "failed" if not result.success else "pending",
+                "all_passed": result.all_checks_passed,
+                "checks": getattr(result, "final_checks", []),
+                "pr": f"{repo}#{pr_number}",
+            }
+        except Exception as e:
+            return {
+                "state": "unknown",
+                "all_passed": False,
+                "checks": [],
+                "error": str(e),
+                "pr": f"{repo}#{pr_number}",
+            }
+
+    def request_review(self, repo: str, pr_number: int, reviewers: list[str] = None,
+                       verbose: bool = True) -> dict:
+        """
+        Request a review on an open PR.
+
+        If reviewers is None, the request is a no-op (GitHub auto-assigns
+        code owners). Returns a status dict.
+        """
+        if not reviewers:
+            if verbose:
+                print(f"[SOMA] request_review: no reviewers specified for {repo}#{pr_number} "
+                      f"— relying on CODEOWNERS")
+            return {"status": "noop", "pr": f"{repo}#{pr_number}",
+                    "reason": "no reviewers specified"}
+
+        from core.tools import run as _run
+        reviewer_args = []
+        for r in reviewers:
+            reviewer_args += ["--reviewer", r]
+
+        result = _run(
+            ["gh", "pr", "edit", str(pr_number), "--repo", repo] + reviewer_args,
+            timeout=20,
+        )
+        if verbose:
+            if result.success:
+                print(f"[SOMA] request_review: requested review from {reviewers} "
+                      f"on {repo}#{pr_number}")
+            else:
+                print(f"[SOMA] request_review: failed — {result.stderr[:120]}")
+
+        self.store.record(
+            domain="oss_contribution",
+            context=f"Review request for {repo}#{pr_number}",
+            action=f"Requested reviewers: {reviewers}",
+            outcome="requested" if result.success else f"failed: {result.stderr[:80]}",
+            success=result.success,
+            model_used="none",
+        )
+        return {
+            "status": "requested" if result.success else "failed",
+            "pr": f"{repo}#{pr_number}",
+            "reviewers": reviewers,
+        }
+
+    def monitor_review(self, repo: str, pr_number: int, verbose: bool = True) -> dict:
+        """
+        Non-blocking review monitor. Reads the current review state of a PR:
+        - Checks for any review comments since last poll
+        - Records new review events in the experience store
+        - Returns a summary with open_items, pending_reviews, ci_state
+
+        Designed to be called from the contribute flow after PR creation;
+        does not block the main loop.
+        """
+        if verbose:
+            print(f"[SOMA] monitor_review: checking {repo}#{pr_number}")
+
+        # 1. Fetch current review state
+        plan = self.plan_from_pr_comments(repo, pr_number, verbose=False)
+        open_items = plan.get("open_items", [])
+        resolved_items = plan.get("resolved_items", [])
+
+        # 2. Non-blocking CI check
+        ci = self.poll_ci_status(repo, pr_number)
+
+        # 3. Get review approval state via gh
+        from core.tools import run as _run
+        import json as _json
+        reviews_raw = _run(
+            ["gh", "pr", "view", str(pr_number), "--repo", repo,
+             "--json", "reviewDecision,reviews,state"],
+            timeout=15,
+        )
+        review_decision = "UNKNOWN"
+        pr_state = "OPEN"
+        if reviews_raw.success:
+            try:
+                review_data = _json.loads(reviews_raw.output)
+                review_decision = review_data.get("reviewDecision") or "NONE"
+                pr_state = review_data.get("state", "OPEN")
+            except Exception:
+                pass
+
+        result = {
+            "pr": f"{repo}#{pr_number}",
+            "pr_state": pr_state,
+            "review_decision": review_decision,
+            "open_items": open_items,
+            "resolved_items": resolved_items,
+            "ci_state": ci.get("state", "unknown"),
+            "ci_all_passed": ci.get("all_passed", False),
+            "needs_attention": bool(open_items) or review_decision == "CHANGES_REQUESTED",
+        }
+
+        if verbose:
+            attention = "YES" if result["needs_attention"] else "no"
+            print(f"[SOMA] monitor_review: {repo}#{pr_number} state={pr_state} "
+                  f"review={review_decision} ci={ci.get('state')} "
+                  f"open_items={len(open_items)} needs_attention={attention}")
+
+        self.store.record(
+            domain="oss_contribution",
+            context=f"Review monitor for {repo}#{pr_number}",
+            action=f"Polled review state: decision={review_decision}, "
+                   f"open={len(open_items)}, ci={ci.get('state')}",
+            outcome="changes_requested" if review_decision == "CHANGES_REQUESTED"
+                    else "approved" if review_decision == "APPROVED"
+                    else "pending",
+            success=review_decision not in ("CHANGES_REQUESTED",),
+            model_used="none",
+        )
+        return result
+
+    def handle_merge_decision(self, repo: str, pr_number: int,
+                               mergeable: bool = True, verbose: bool = True) -> dict:
+        """
+        Decide whether to merge, address feedback, or surface to human.
+
+        - If mergeable=True and CI passed and review approved: attempt auto-merge
+        - If review has CHANGES_REQUESTED: kick off execute_pr_plan to address them
+        - If CI failed: surface to human via decision_gate
+        - Always records the decision in the experience store
+
+        Non-blocking: never waits on CI — use poll_ci_status() to check first.
+        """
+        if verbose:
+            print(f"[SOMA] handle_merge_decision: {repo}#{pr_number} mergeable={mergeable}")
+
+        review = self.monitor_review(repo, pr_number, verbose=False)
+        review_decision = review.get("review_decision", "NONE")
+        ci_state = review.get("ci_state", "unknown")
+        open_items = review.get("open_items", [])
+        pr_state = review.get("pr_state", "OPEN")
+
+        if pr_state in ("MERGED", "CLOSED"):
+            if verbose:
+                print(f"[SOMA] handle_merge_decision: PR already {pr_state} — nothing to do")
+            return {"status": pr_state.lower(), "pr": f"{repo}#{pr_number}"}
+
+        # Case 1: review approved + CI green → auto-merge
+        if review_decision == "APPROVED" and ci_state == "passed" and mergeable:
+            from core.tools import run as _run
+            merge_result = _run(
+                ["gh", "pr", "merge", str(pr_number), "--repo", repo,
+                 "--squash", "--auto"],
+                timeout=30,
+            )
+            outcome = "merged" if merge_result.success else f"merge_failed: {merge_result.stderr[:80]}"
+            if verbose:
+                if merge_result.success:
+                    print(f"[SOMA] handle_merge_decision: auto-merged {repo}#{pr_number}")
+                else:
+                    print(f"[SOMA] handle_merge_decision: merge failed — {merge_result.stderr[:120]}")
+            self.store.record(
+                domain="oss_contribution",
+                context=f"Merge decision for {repo}#{pr_number}",
+                action="auto-merge (approved + CI green)",
+                outcome=outcome,
+                success=merge_result.success,
+                model_used="none",
+            )
+            return {"status": "merged" if merge_result.success else "merge_failed",
+                    "pr": f"{repo}#{pr_number}"}
+
+        # Case 2: changes requested → address feedback autonomously
+        if review_decision == "CHANGES_REQUESTED" and open_items:
+            if verbose:
+                print(f"[SOMA] handle_merge_decision: {len(open_items)} change(s) requested "
+                      f"— executing pr plan")
+            plan_result = self.execute_pr_plan(repo, pr_number, verbose=verbose)
+            self.store.record(
+                domain="oss_contribution",
+                context=f"Addressed review feedback for {repo}#{pr_number}",
+                action=f"execute_pr_plan: {len(open_items)} items",
+                outcome=plan_result.get("status", "unknown"),
+                success=plan_result.get("pushed", False),
+                model_used=TIER_2_MODEL,
+            )
+            return {"status": "feedback_addressed", "pr": f"{repo}#{pr_number}",
+                    "plan_result": plan_result}
+
+        # Case 3: CI failed → surface to human
+        if ci_state == "failed":
+            if verbose:
+                print(f"[SOMA] handle_merge_decision: CI failed on {repo}#{pr_number} "
+                      f"— surfacing to human")
+            self.decision_gate.request(
+                body=(f"CI failed on {repo}#{pr_number}. "
+                      "Should SOMA: (A) attempt CI auto-fix, (B) skip, (C) close PR"),
+                options=["A", "B", "C"],
+                soma_preference="A",
+                soma_confidence=0.5,
+                context_refs=[f"{repo}#{pr_number}"],
+            )
+            self.store.record(
+                domain="oss_contribution",
+                context=f"CI failure on {repo}#{pr_number}",
+                action="surfaced to human",
+                outcome="awaiting_human",
+                success=False,
+                model_used="none",
+            )
+            return {"status": "awaiting_human", "pr": f"{repo}#{pr_number}",
+                    "reason": "ci_failed"}
+
+        # Default: nothing actionable yet — PR is still pending review
+        if verbose:
+            print(f"[SOMA] handle_merge_decision: {repo}#{pr_number} pending "
+                  f"(review={review_decision}, ci={ci_state})")
+        return {"status": "pending", "pr": f"{repo}#{pr_number}",
+                "review_decision": review_decision, "ci_state": ci_state}
 
     # ------------------------------------------------------------------
     # Local build loop

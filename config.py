@@ -24,6 +24,10 @@ CONFLICT_MODEL_FALLBACK = "qwen2.5-coder:7b"
 # Do not use as a local fallback. Use only when MINIMAX_API_KEY is set.
 CLOUD_MODEL = "minimax-m2.7:cloud"
 
+# Claude cloud model — used only when ANTHROPIC_API_KEY is set and complexity > 0.9.
+# Falls back to TIER_1_MODEL if the API key is absent.
+CLAUDE_MODEL = "claude-sonnet-4-5"
+
 EMBED_MODEL = "nomic-embed-text"    # Local semantic embeddings (768-dim)
 EMBED_DIM = 768
 
@@ -41,3 +45,32 @@ DECAY_RATE_DEFAULT = 0.05 # Confidence drops 5% per decay period
 # Domains (start with code, expand to research and task)
 DOMAINS = ["code", "research", "task"]
 ACTIVE_DOMAIN = "code"
+
+# ---------------------------------------------------------------------------
+# Qwen model variants — all served via Ollama
+# ---------------------------------------------------------------------------
+QWEN_72B = "qwen2.5-coder:72b"   # Largest local — near-cloud quality
+QWEN_32B = "qwen2.5-coder:32b"   # Same as TIER_1_MODEL / TIER_2_MODEL
+QWEN_14B = "qwen2.5-coder:14b"   # Mid-range between 32b and 7b
+QWEN_7B  = "qwen2.5-coder:7b"    # Same as TIER_3_MODEL
+
+# ---------------------------------------------------------------------------
+# SUPPORTED_MODELS — authoritative list of model identifiers SOMA may use.
+# Any model name passed to LLMClient.ask() should appear here.
+# ---------------------------------------------------------------------------
+SUPPORTED_MODELS: list[str] = [
+    # Qwen local variants
+    QWEN_72B,
+    QWEN_32B,
+    QWEN_14B,
+    QWEN_7B,
+    # Conflict / specialist aliases (may overlap with Qwen variants above)
+    CONFLICT_MODEL,
+    CONFLICT_MODEL_FALLBACK,
+    # Cloud / Anthropic
+    CLAUDE_MODEL,
+    "claude-opus-4-5",
+    "claude-haiku-3-5",
+    # Embedding (not used for generation, listed for completeness)
+    EMBED_MODEL,
+]
